@@ -1,6 +1,23 @@
 export default {
   async fetch(request, env) {
     const requestUrl = new URL(request.url);
+    try {
+      if (requestUrl.pathname === "/api/accounts" && request.method === "GET") {
+        return listAccounts(env);
+      }
+      if (requestUrl.pathname === "/api/content" && request.method === "GET") {
+        return listContent(requestUrl, env);
+      }
+      if (requestUrl.pathname.startsWith("/api/avatar/") && request.method === "GET") {
+        return serveAvatar(requestUrl, env);
+      }
+      if (requestUrl.pathname.startsWith("/api/admin/")) {
+        return handleAdminRequest(request, requestUrl, env);
+      }
+    } catch (error) {
+      return apiError(toChineseError(error), error?.status || 500);
+    }
+
     if (requestUrl.pathname === "/api/image-proxy") {
       if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
       const source = requestUrl.searchParams.get("url");
@@ -50,6 +67,378 @@ export default {
     return env.ASSETS.fetch(new Request(indexUrl, request));
   },
 };
+
+const SESSION_SECONDS = 30 * 60;
+const LOCK_SECONDS = 15 * 60;
+const MAX_LOGIN_FAILURES = 5;
+const AVATAR_MAX_BYTES = 5 * 1024 * 1024;
+
+async function listAccounts(env) {
+  requireDb(env);
+  const shared = await env.DB.prepare("SELECT COUNT(*) AS count FROM contents WHERE owner_account_id IS NULL").first();
+  const result = await env.DB.prepare(`
+    SELECT a.id, a.display_name, a.handle, a.avatar_url, a.created_at, a.updated_at,
+      COUNT(c.id) AS exclusive_content_count
+    FROM accounts a
+    LEFT JOIN contents c ON c.owner_account_id = a.id
+    GROUP BY a.id
+    ORDER BY a.created_at ASC, a.display_name ASC
+  `).all();
+  const sharedCount = Number(shared?.count || 0);
+  return apiJson({
+    accounts: (result.results || []).map((row) => ({
+      id: row.id,
+      displayName: row.display_name,
+      handle: row.handle,
+      avatarUrl: row.avatar_url,
+      exclusiveContentCount: Number(row.exclusive_content_count || 0),
+      contentCount: sharedCount + Number(row.exclusive_content_count || 0),
+    })),
+    sharedContentCount: sharedCount,
+  });
+}
+
+async function listContent(url, env) {
+  requireDb(env);
+  const accountId = url.searchParams.get("accountId") || "";
+  if (!accountId) return apiError("请选择账号。", 400);
+  const result = await env.DB.prepare(`
+    SELECT c.*, a.display_name AS owner_display_name
+    FROM contents c
+    LEFT JOIN accounts a ON a.id = c.owner_account_id
+    WHERE c.owner_account_id IS NULL OR c.owner_account_id = ?
+    ORDER BY c.priority DESC, c.created_at ASC, c.id ASC
+  `).bind(accountId).all();
+  return apiJson({ content: (result.results || []).map(mapContentRow) });
+}
+
+async function serveAvatar(url, env) {
+  if (!env.AVATARS) return apiError("头像存储暂不可用。", 503);
+  const key = decodeURIComponent(url.pathname.slice("/api/avatar/".length));
+  if (!key || key.includes("..")) return apiError("头像地址无效。", 400);
+  const object = await env.AVATARS.get(key);
+  if (!object) return new Response("Not found", { status: 404 });
+  const headers = new Headers();
+  object.writeHttpMetadata?.(headers);
+  headers.set("Cache-Control", "public, max-age=31536000, immutable");
+  headers.set("ETag", object.httpEtag || object.etag || key);
+  return new Response(object.body, { headers });
+}
+
+async function handleAdminRequest(request, url, env) {
+  requireDb(env);
+  if (url.pathname === "/api/admin/login" && request.method === "POST") return adminLogin(request, env);
+  if (url.pathname === "/api/admin/logout" && request.method === "POST") {
+    return apiJson({ authenticated: false }, 200, { "Set-Cookie": clearSessionCookie() });
+  }
+  if (url.pathname === "/api/admin/session" && request.method === "GET") {
+    return apiJson({ authenticated: await hasAdminSession(request, env) });
+  }
+  if (!(await hasAdminSession(request, env))) return apiError("管理会话已过期，请重新输入管理密码。", 401);
+
+  if (url.pathname === "/api/admin/accounts" && request.method === "POST") return createAccount(request, env);
+  if (url.pathname.startsWith("/api/admin/accounts/") && request.method === "PUT") return updateAccount(request, url, env);
+  if (url.pathname.startsWith("/api/admin/accounts/") && request.method === "DELETE") return deleteAccount(url, env);
+  if (url.pathname === "/api/admin/content" && request.method === "POST") return createContent(request, env);
+  if (url.pathname.startsWith("/api/admin/content/") && request.method === "PUT") return updateContent(request, url, env);
+  if (url.pathname.startsWith("/api/admin/content/") && request.method === "DELETE") return deleteContent(url, env);
+  if (url.pathname === "/api/admin/avatar" && request.method === "POST") return uploadAvatar(request, env);
+  return apiError("没有这个管理操作。", 404);
+}
+
+async function adminLogin(request, env) {
+  if (!env.ADMIN_PASSWORD_HASH || !env.SESSION_SECRET) return apiError("管理密码尚未配置。", 503);
+  const clientKey = await getClientKey(request, env);
+  const now = Date.now();
+  const attempt = await env.DB.prepare("SELECT failures, locked_until FROM admin_login_attempts WHERE client_key = ?").bind(clientKey).first();
+  if (Number(attempt?.locked_until || 0) > now) {
+    const minutes = Math.max(1, Math.ceil((Number(attempt.locked_until) - now) / 60000));
+    return apiError(`尝试次数过多，请在 ${minutes} 分钟后再试。`, 429);
+  }
+  const payload = await readJson(request);
+  const candidateHash = await sha256Hex(String(payload.password || ""));
+  if (!safeEqual(candidateHash, String(env.ADMIN_PASSWORD_HASH).toLowerCase())) {
+    const failures = Number(attempt?.failures || 0) + 1;
+    const lockedUntil = failures >= MAX_LOGIN_FAILURES ? now + LOCK_SECONDS * 1000 : 0;
+    await env.DB.prepare(`
+      INSERT INTO admin_login_attempts (client_key, failures, locked_until, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(client_key) DO UPDATE SET failures = excluded.failures, locked_until = excluded.locked_until, updated_at = excluded.updated_at
+    `).bind(clientKey, failures, lockedUntil, now).run();
+    return apiError(failures >= MAX_LOGIN_FAILURES ? "尝试次数过多，已锁定15分钟。" : `管理密码不正确，还可尝试 ${MAX_LOGIN_FAILURES - failures} 次。`, failures >= MAX_LOGIN_FAILURES ? 429 : 401);
+  }
+  await env.DB.prepare("DELETE FROM admin_login_attempts WHERE client_key = ?").bind(clientKey).run();
+  return apiJson({ authenticated: true }, 200, { "Set-Cookie": await createSessionCookie(env) });
+}
+
+async function createAccount(request, env) {
+  const payload = await readJson(request);
+  const values = validateAccount(payload);
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  try {
+    await env.DB.prepare("INSERT INTO accounts (id, display_name, handle, avatar_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .bind(id, values.displayName, values.handle, values.avatarUrl, now, now).run();
+  } catch (error) {
+    if (String(error).includes("UNIQUE")) return apiError("这个账号已经存在，请换一个账号。", 409);
+    throw error;
+  }
+  return apiJson({ account: { id, ...values, exclusiveContentCount: 0, contentCount: 0 } }, 201);
+}
+
+async function updateAccount(request, url, env) {
+  const id = pathId(url, "/api/admin/accounts/");
+  const existing = await env.DB.prepare("SELECT avatar_url FROM accounts WHERE id = ?").bind(id).first();
+  if (!existing) return apiError("账号不存在。", 404);
+  const payload = await readJson(request);
+  const values = validateAccount(payload);
+  try {
+    await env.DB.prepare("UPDATE accounts SET display_name = ?, handle = ?, avatar_url = ?, updated_at = ? WHERE id = ?")
+      .bind(values.displayName, values.handle, values.avatarUrl, new Date().toISOString(), id).run();
+  } catch (error) {
+    if (String(error).includes("UNIQUE")) return apiError("这个账号已经存在，请换一个账号。", 409);
+    throw error;
+  }
+  if (existing.avatar_url !== values.avatarUrl) await removeManagedAvatar(existing.avatar_url, env);
+  return apiJson({ account: { id, ...values } });
+}
+
+async function deleteAccount(url, env) {
+  const id = pathId(url, "/api/admin/accounts/");
+  const total = await env.DB.prepare("SELECT COUNT(*) AS count FROM accounts").first();
+  if (Number(total?.count || 0) <= 1) return apiError("至少需要保留一个账号。", 409);
+  const account = await env.DB.prepare("SELECT avatar_url FROM accounts WHERE id = ?").bind(id).first();
+  if (!account) return apiError("账号不存在。", 404);
+  const exclusive = await env.DB.prepare("SELECT COUNT(*) AS count FROM contents WHERE owner_account_id = ?").bind(id).first();
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM contents WHERE owner_account_id = ?").bind(id),
+    env.DB.prepare("DELETE FROM accounts WHERE id = ?").bind(id),
+  ]);
+  await removeManagedAvatar(account.avatar_url, env);
+  return apiJson({ deleted: true, deletedContentCount: Number(exclusive?.count || 0) });
+}
+
+async function createContent(request, env) {
+  const payload = await readJson(request);
+  const values = await validateContent(payload, env);
+  const id = `content-${crypto.randomUUID()}`;
+  const now = new Date().toISOString();
+  await env.DB.prepare(`
+    INSERT INTO contents (id, owner_account_id, category, angle, action, source_name, source_url, product_fit, priority,
+      requires_verification, origin, source_article, source_date, source_file, title, draft, insight, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(id, values.ownerAccountId, values.category, values.angle, values.action, values.sourceName, values.sourceUrl,
+    JSON.stringify(values.productFit), values.priority, values.requiresVerification ? 1 : 0, values.origin,
+    values.sourceArticle, values.sourceDate, values.sourceFile, values.title, values.draft, values.insight, now, now).run();
+  return apiJson({ content: { id, ...values } }, 201);
+}
+
+async function updateContent(request, url, env) {
+  const id = pathId(url, "/api/admin/content/");
+  const exists = await env.DB.prepare("SELECT id FROM contents WHERE id = ?").bind(id).first();
+  if (!exists) return apiError("内容不存在。", 404);
+  const values = await validateContent(await readJson(request), env);
+  await env.DB.prepare(`
+    UPDATE contents SET owner_account_id = ?, category = ?, angle = ?, action = ?, source_name = ?, source_url = ?,
+      product_fit = ?, priority = ?, requires_verification = ?, origin = ?, source_article = ?, source_date = ?,
+      source_file = ?, title = ?, draft = ?, insight = ?, updated_at = ? WHERE id = ?
+  `).bind(values.ownerAccountId, values.category, values.angle, values.action, values.sourceName, values.sourceUrl,
+    JSON.stringify(values.productFit), values.priority, values.requiresVerification ? 1 : 0, values.origin,
+    values.sourceArticle, values.sourceDate, values.sourceFile, values.title, values.draft, values.insight,
+    new Date().toISOString(), id).run();
+  return apiJson({ content: { id, ...values } });
+}
+
+async function deleteContent(url, env) {
+  const id = pathId(url, "/api/admin/content/");
+  const exists = await env.DB.prepare("SELECT id FROM contents WHERE id = ?").bind(id).first();
+  if (!exists) return apiError("内容不存在。", 404);
+  await env.DB.prepare("DELETE FROM contents WHERE id = ?").bind(id).run();
+  return apiJson({ deleted: true });
+}
+
+async function uploadAvatar(request, env) {
+  if (!env.AVATARS) return apiError("头像存储暂不可用。", 503);
+  const length = Number(request.headers.get("content-length") || 0);
+  if (length > AVATAR_MAX_BYTES + 200000) return apiError("头像不能超过5MB。", 413);
+  const form = await request.formData();
+  const file = form.get("avatar");
+  if (!file || typeof file.arrayBuffer !== "function") return apiError("请选择头像文件。", 400);
+  if (file.size > AVATAR_MAX_BYTES) return apiError("头像不能超过5MB。", 413);
+  const extensions = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
+  const extension = extensions[file.type];
+  if (!extension) return apiError("头像仅支持 JPEG、PNG 或 WebP。", 400);
+  const key = `avatars/${crypto.randomUUID()}.${extension}`;
+  await env.AVATARS.put(key, await file.arrayBuffer(), { httpMetadata: { contentType: file.type } });
+  return apiJson({ avatarUrl: `/api/avatar/${encodeURIComponent(key)}` }, 201);
+}
+
+function validateAccount(payload) {
+  const displayName = String(payload.displayName || "").trim().slice(0, 20);
+  const handleValue = String(payload.handle || "").trim().replace(/^@+/, "").replace(/\s+/g, "").slice(0, 31);
+  const avatarUrl = String(payload.avatarUrl || "/annie-avatar.jpg").trim();
+  if (!displayName) throw httpError("请填写昵称。", 400);
+  if (!handleValue) throw httpError("请填写账号。", 400);
+  if (!/^[\p{L}\p{N}_.-]+$/u.test(handleValue)) throw httpError("账号只能包含文字、数字、下划线、点和短横线。", 400);
+  if (!avatarUrl.startsWith("/") && !avatarUrl.startsWith("data:image/")) throw httpError("头像地址无效。", 400);
+  return { displayName, handle: `@${handleValue}`, avatarUrl };
+}
+
+async function validateContent(payload, env) {
+  const title = String(payload.title || "").trim().slice(0, 120);
+  const draft = String(payload.draft || "").trim().slice(0, 6000);
+  const category = String(payload.category || "未分类").trim().slice(0, 40) || "未分类";
+  const ownerAccountId = payload.ownerAccountId ? String(payload.ownerAccountId) : null;
+  if (!title) throw httpError("请填写内容标题。", 400);
+  if (!draft) throw httpError("请填写卡片正文。", 400);
+  if (ownerAccountId) {
+    const owner = await env.DB.prepare("SELECT id FROM accounts WHERE id = ?").bind(ownerAccountId).first();
+    if (!owner) throw httpError("指定账号不存在。", 400);
+  }
+  const insight = String(payload.insight || draft.replace(/\s+/g, " ").slice(0, 180)).trim().slice(0, 500);
+  const tags = Array.isArray(payload.productFit) ? payload.productFit : String(payload.productFit || "").split(/[、,，]/);
+  return {
+    ownerAccountId,
+    category,
+    angle: String(payload.angle || "").trim().slice(0, 1000),
+    action: String(payload.action || "").trim().slice(0, 1000),
+    sourceName: String(payload.sourceName || "自建内容").trim().slice(0, 120),
+    sourceUrl: String(payload.sourceUrl || "").trim().slice(0, 1000),
+    productFit: tags.map((item) => String(item).trim()).filter(Boolean).slice(0, 8),
+    priority: Math.max(0, Math.min(10000, Number(payload.priority || 0))),
+    requiresVerification: Boolean(payload.requiresVerification),
+    origin: String(payload.origin || "账号内容库").trim().slice(0, 200),
+    sourceArticle: String(payload.sourceArticle || "").trim().slice(0, 240),
+    sourceDate: String(payload.sourceDate || "").trim().slice(0, 30),
+    sourceFile: String(payload.sourceFile || "").trim().slice(0, 300),
+    title,
+    draft,
+    insight,
+  };
+}
+
+function mapContentRow(row) {
+  let productFit = [];
+  try { productFit = JSON.parse(row.product_fit || "[]"); } catch { productFit = []; }
+  return {
+    id: row.id,
+    ownerAccountId: row.owner_account_id || null,
+    ownerDisplayName: row.owner_display_name || null,
+    scope: row.owner_account_id ? "account" : "public",
+    category: row.category,
+    angle: row.angle,
+    action: row.action,
+    sourceName: row.source_name,
+    sourceUrl: row.source_url,
+    productFit,
+    priority: Number(row.priority || 0),
+    requiresVerification: Boolean(row.requires_verification),
+    origin: row.origin,
+    sourceArticle: row.source_article,
+    sourceDate: row.source_date,
+    sourceFile: row.source_file,
+    title: row.title,
+    draft: row.draft,
+    insight: row.insight,
+  };
+}
+
+async function hasAdminSession(request, env) {
+  if (!env.SESSION_SECRET) return false;
+  const token = parseCookies(request.headers.get("cookie") || "").annie_admin;
+  if (!token) return false;
+  const parts = token.split(".");
+  if (parts.length !== 3 || Number(parts[0]) <= Math.floor(Date.now() / 1000)) return false;
+  const expected = await hmacBase64Url(env.SESSION_SECRET, `${parts[0]}.${parts[1]}`);
+  return safeEqual(parts[2], expected);
+}
+
+async function createSessionCookie(env) {
+  const expires = Math.floor(Date.now() / 1000) + SESSION_SECONDS;
+  const nonce = crypto.randomUUID();
+  const signature = await hmacBase64Url(env.SESSION_SECRET, `${expires}.${nonce}`);
+  return `annie_admin=${expires}.${nonce}.${signature}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${SESSION_SECONDS}`;
+}
+
+function clearSessionCookie() {
+  return "annie_admin=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0";
+}
+
+async function hmacBase64Url(secret, value) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const bytes = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value)));
+  return bytesToBase64Url(bytes);
+}
+
+async function sha256Hex(value) {
+  const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function getClientKey(request, env) {
+  const ip = request.headers.get("cf-connecting-ip") || request.headers.get("x-forwarded-for") || "unknown";
+  return sha256Hex(`${ip}:${env.SESSION_SECRET}`);
+}
+
+function bytesToBase64Url(bytes) {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function safeEqual(left, right) {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  return difference === 0;
+}
+
+function parseCookies(value) {
+  return Object.fromEntries(value.split(";").map((part) => part.trim()).filter(Boolean).map((part) => {
+    const index = part.indexOf("=");
+    return [part.slice(0, index), part.slice(index + 1)];
+  }));
+}
+
+async function removeManagedAvatar(avatarUrl, env) {
+  if (!env.AVATARS || !String(avatarUrl || "").startsWith("/api/avatar/")) return;
+  const key = decodeURIComponent(String(avatarUrl).slice("/api/avatar/".length));
+  if (key.startsWith("avatars/")) await env.AVATARS.delete(key);
+}
+
+async function readJson(request) {
+  try { return await request.json(); } catch { throw httpError("请求内容格式不正确。", 400); }
+}
+
+function pathId(url, prefix) {
+  const id = decodeURIComponent(url.pathname.slice(prefix.length));
+  if (!id || id.includes("/")) throw httpError("记录编号无效。", 400);
+  return id;
+}
+
+function requireDb(env) {
+  if (!env.DB) throw httpError("云端内容库暂不可用。", 503);
+}
+
+function httpError(message, status) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
+function toChineseError(error) {
+  const message = String(error?.message || error || "");
+  if (message.includes("no such table")) return "云端内容库正在初始化，请稍后刷新。";
+  return message || "操作失败，请稍后重试。";
+}
+
+function apiJson(body, status = 200, extraHeaders = {}) {
+  return Response.json(body, { status, headers: { "Cache-Control": "no-store", ...extraHeaders } });
+}
+
+function apiError(message, status = 500) {
+  return apiJson({ error: message }, status);
+}
 
 function isPrivateHost(hostname) {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");

@@ -10,11 +10,13 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 
 ## Durable product decisions
 
-- Brand the local app as “安妮内容卡片生成器” with the identity “安妮 / @kiki89699” and use `public/annie-avatar.jpg` as the exported card avatar.
+- Brand the local app as “安妮内容卡片生成器”; seed “安妮 / @kiki89699” with `public/annie-avatar.jpg` as the default account while allowing the active exported identity to come from the cloud account library.
 - Use only the user-provided 七月安妮公众号 archive as the content source; do not ship the original TianCe tweet or AI libraries.
 - Keep extracted cards editable and label claims that require verification before publication.
 - Export cards in a complete X-post structure with timestamp, view count, and the reply/repost/like/bookmark/share row. Let operators randomize a coherent set of illustrative interaction figures using realistic ratios.
 - Randomize the post date, time, and complete interaction dataset whenever a new source item is selected, when the random-content action is used, and on a fresh page load.
+- Put account switching in the top navigation. Public visitors may switch accounts and use content without signing in; password-protected managers may add, edit, and delete cloud-synced accounts and public/account-specific content.
+- Store structured account/content data in Sites D1 and uploaded account avatars in Sites R2. Seed the original 156 七月安妮 entries as public content available to every account.
 
 - Keep the primary workflow extremely simple: select a tweet, select a publishing style/background, and download a finished image.
 - Keep two output modes: the original standalone tweet card and a Douyin-ready 3:4 portrait image combining a background with the tweet card.

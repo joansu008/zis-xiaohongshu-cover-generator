@@ -2,12 +2,17 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toPng } from "html-to-image";
 import {
   ArrowsClockwise, BookmarkSimple, ChatCircle, Check, CopySimple, DownloadSimple,
-  DotsThree, Heart, ImageSquare, MagnifyingGlass, SealCheck, ShareNetwork,
+  CaretDown, DotsThree, Heart, ImageSquare, MagnifyingGlass, SealCheck, ShareNetwork,
   ShieldCheck, Shuffle, Sparkle, UploadSimple, WarningCircle,
 } from "@phosphor-icons/react";
 import baseContentSources from "./content-sources.json";
+import { AccountManagerModal } from "./AccountManagerModal.jsx";
 
-const contentSources = baseContentSources;
+const fallbackAccount = {
+  id: "annie-default", displayName: "安妮", handle: "@kiki89699", avatarUrl: "/annie-avatar.jpg",
+  exclusiveContentCount: 0, contentCount: baseContentSources.length,
+};
+const fallbackContentSources = baseContentSources.map((source) => ({ ...source, ownerAccountId: null, ownerDisplayName: null, scope: "public" }));
 const backgrounds = [
   { id: "city-1", name: "香港海边", tags: "香港 城市 海边 蓝天", src: "/backgrounds/city-1.jpg" },
   { id: "city-2", name: "城市天际线", tags: "香港 城市 天际线 日落", src: "/backgrounds/city-2.jpg" },
@@ -42,6 +47,7 @@ function getAdaptiveFontSize(text, preferred, poster = false) {
   return Math.min(preferred, limit);
 }
 function createSourceDraft(source) {
+  if (!source) return "选择一条内容，再调整成你想发布的版本。";
   if (source.draft) return source.draft;
   return `${source.title}\n\n${source.insight}\n\n${source.angle}\n\n${source.action || "别急着收藏更多工具。先找一件你今天真的要完成的事，用AI跑完一次，再根据结果继续调整。"}`;
 }
@@ -169,19 +175,21 @@ function TweetCard({ cardRef, text, fontSize, cardTheme, avatar, displayName, ac
 }
 
 export function App() {
+  const [accounts, setAccounts] = useState([fallbackAccount]);
+  const [activeAccountId, setActiveAccountId] = useState(fallbackAccount.id);
+  const [contentSources, setContentSources] = useState(fallbackContentSources);
+  const [sharedContentCount, setSharedContentCount] = useState(fallbackContentSources.length);
+  const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [mode, setMode] = useState("sources");
   const [outputMode, setOutputMode] = useState("poster");
   const [orientation, setOrientation] = useState("portrait");
-  const [draft, setDraft] = useState(() => contentSources[0]?.draft || "选择一条安妮的内容，再调整成你想发布的版本。");
+  const [draft, setDraft] = useState(() => fallbackContentSources[0]?.draft || "选择一条内容，再调整成你想发布的版本。");
   const [sourceQuery, setSourceQuery] = useState("");
   const [sourceCategory, setSourceCategory] = useState("全部");
-  const [selectedSourceId, setSelectedSourceId] = useState(contentSources[0].id);
-  const [sourceDraft, setSourceDraft] = useState(() => createSourceDraft(contentSources[0]));
+  const [selectedSourceId, setSelectedSourceId] = useState(fallbackContentSources[0].id);
+  const [sourceDraft, setSourceDraft] = useState(() => createSourceDraft(fallbackContentSources[0]));
   const [fontSize, setFontSize] = useState(18);
   const [cardTheme, setCardTheme] = useState("light");
-  const [avatar, setAvatar] = useState("/annie-avatar.jpg");
-  const [displayName, setDisplayName] = useState("安妮");
-  const [account, setAccount] = useState("@kiki89699");
   const [interactions, setInteractions] = useState(() => createInteractionData());
   const [postedAt, setPostedAt] = useState(() => createRandomPostDate());
   const [background, setBackground] = useState(backgrounds[0].src);
@@ -200,32 +208,104 @@ export function App() {
   const dragStateRef = useRef(null);
   const pinchRef = useRef(null);
   const isMobile = typeof navigator !== "undefined" && /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
-  const selectedSource = useMemo(() => contentSources.find((source) => source.id === selectedSourceId) || contentSources[0], [selectedSourceId]);
+  const activeAccount = useMemo(() => accounts.find((item) => item.id === activeAccountId) || accounts[0] || fallbackAccount, [accounts, activeAccountId]);
+  const selectedSource = useMemo(() => contentSources.find((source) => source.id === selectedSourceId) || contentSources[0], [contentSources, selectedSourceId]);
   const activeText = mode === "sources" ? sourceDraft : draft;
   const adaptiveCardFontSize = getAdaptiveFontSize(activeText, fontSize, false);
   const adaptivePosterFontSize = getAdaptiveFontSize(activeText, fontSize, true);
   const posterFitScale = activeText.length > 900 ? 0.62 : activeText.length > 700 ? 0.7 : activeText.length > 520 ? 0.78 : activeText.length > 360 ? 0.86 : 1;
-  const sourceCategories = ["全部", ...new Set(contentSources.map((source) => source.category))];
+  const sourceCategories = useMemo(() => ["全部", ...new Set(contentSources.map((source) => source.category))], [contentSources]);
   const sourceResults = useMemo(() => {
     const needle = sourceQuery.trim().toLowerCase();
     return contentSources.filter((source) => (sourceCategory === "全部" || source.category === sourceCategory) && (!needle || `${source.title} ${source.insight} ${source.angle} ${source.productFit.join(" ")}`.toLowerCase().includes(needle)));
-  }, [sourceCategory, sourceQuery]);
+  }, [contentSources, sourceCategory, sourceQuery]);
   const visibleSourceResults = sourceResults.slice(0, 100);
   const backgroundResults = useMemo(() => {
     const needle = backgroundQuery.trim().toLowerCase();
     return backgrounds.filter((item) => !needle || `${item.name} ${item.tags}`.toLowerCase().includes(needle));
   }, [backgroundQuery]);
-  useEffect(() => setExported(false), [mode, outputMode, orientation, draft, sourceDraft, fontSize, cardTheme, background, overlay, cardScale, cardPosition, avatar, displayName, account, interactions, postedAt]);
+  useEffect(() => setExported(false), [mode, outputMode, orientation, draft, sourceDraft, fontSize, cardTheme, background, overlay, cardScale, cardPosition, activeAccount, interactions, postedAt]);
   useEffect(() => setCardPosition({ x: 0, y: 0 }), [orientation]);
   useEffect(() => { setPublishCopy(""); setCopyStatus(""); }, [mode, draft, sourceDraft]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const selected = await refreshAccounts();
+      if (!cancelled && selected) await refreshContent(selected.id);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  async function refreshAccounts(preferredId = null, deletedId = null) {
+    try {
+      const response = await fetch("/api/accounts", { cache: "no-store" });
+      if (!response.ok) throw new Error("accounts unavailable");
+      const payload = await response.json();
+      const nextAccounts = payload.accounts || [];
+      if (!nextAccounts.length) throw new Error("empty accounts");
+      setAccounts(nextAccounts);
+      setSharedContentCount(Number(payload.sharedContentCount || 0));
+      const storedId = window.localStorage.getItem("annie-active-account");
+      const requestedId = preferredId || storedId || (deletedId === activeAccountId ? null : activeAccountId);
+      const nextAccount = nextAccounts.find((item) => item.id === requestedId)
+        || nextAccounts.find((item) => item.id === storedId)
+        || nextAccounts[0];
+      setActiveAccountId(nextAccount.id);
+      window.localStorage.setItem("annie-active-account", nextAccount.id);
+      return nextAccount;
+    } catch {
+      setAccounts([fallbackAccount]);
+      setSharedContentCount(fallbackContentSources.length);
+      return fallbackAccount;
+    }
+  }
+
+  async function refreshContent(accountId = activeAccountId, preferredSourceId = null) {
+    let nextSources = fallbackContentSources;
+    try {
+      const response = await fetch(`/api/content?accountId=${encodeURIComponent(accountId)}`, { cache: "no-store" });
+      if (!response.ok) throw new Error("content unavailable");
+      const payload = await response.json();
+      nextSources = payload.content || [];
+    } catch {
+      nextSources = fallbackContentSources;
+    }
+    setContentSources(nextSources);
+    setSourceCategory("全部");
+    const rememberedId = preferredSourceId || window.localStorage.getItem(`annie-last-source:${accountId}`);
+    const nextSource = nextSources.find((item) => item.id === rememberedId) || nextSources[0];
+    setSelectedSourceId(nextSource?.id || "");
+    setSourceDraft(createSourceDraft(nextSource));
+    if (nextSource) window.localStorage.setItem(`annie-last-source:${accountId}`, nextSource.id);
+    return nextSources;
+  }
+
+  async function switchAccountIdentity(nextAccount) {
+    setActiveAccountId(nextAccount.id);
+    window.localStorage.setItem("annie-active-account", nextAccount.id);
+    randomizePostData();
+    await refreshContent(nextAccount.id);
+    setAccountModalOpen(false);
+  }
+
+  async function handleAccountsChanged(preferredId = null, deletedId = null) {
+    const nextAccount = await refreshAccounts(preferredId, deletedId);
+    if (nextAccount) await refreshContent(nextAccount.id);
+  }
 
   function switchMode(nextMode) { setMode(nextMode); if (nextMode === "draft" && !draft.trim()) setDraft(sourceDraft); }
   function randomizePostData() { setInteractions(createInteractionData()); setPostedAt(createRandomPostDate()); }
-  function selectSource(source) { setSelectedSourceId(source.id); setSourceDraft(createSourceDraft(source)); randomizePostData(); }
+  function selectSource(source) {
+    if (!source) return;
+    setSelectedSourceId(source.id);
+    setSourceDraft(createSourceDraft(source));
+    window.localStorage.setItem(`annie-last-source:${activeAccountId}`, source.id);
+    randomizePostData();
+  }
   function pickRandomSource() {
     const pool = sourceResults.length ? sourceResults : contentSources;
     const alternatives = pool.filter((source) => source.id !== selectedSourceId);
-    selectSource((alternatives.length ? alternatives : pool)[Math.floor(Math.random() * (alternatives.length ? alternatives.length : pool.length))]);
+    if (pool.length) selectSource((alternatives.length ? alternatives : pool)[Math.floor(Math.random() * (alternatives.length ? alternatives.length : pool.length))]);
   }
   function loadUpload(event) {
     const file = event.target.files?.[0];
@@ -233,22 +313,6 @@ export function App() {
     const reader = new FileReader();
     reader.onload = () => setBackground(String(reader.result));
     reader.readAsDataURL(file);
-  }
-  function loadAvatar(event) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => setAvatar(String(reader.result));
-    reader.readAsDataURL(file);
-  }
-  function updateAccount(value) {
-    const clean = value.trimStart().replace(/^@+/, "");
-    setAccount(clean ? `@${clean}` : "@");
-  }
-  function resetIdentity() {
-    setAvatar("/annie-avatar.jpg");
-    setDisplayName("安妮");
-    setAccount("@kiki89699");
   }
   function applyBackgroundUrl() {
     const value = backgroundUrl.trim();
@@ -364,13 +428,12 @@ export function App() {
     return exportNode(directCardRef.current, `安妮纯卡片-${direction}-${fileLabel}.png`, cardTheme === "light" ? "#ffffff" : "#000000");
   }
 
-  const identityStep = mode === "sources" ? "04" : "03";
-  const outputStep = mode === "sources" ? "05" : "04";
-  const backgroundStep = mode === "sources" ? "06" : "05";
-  const finishStep = mode === "sources" ? (outputMode === "poster" ? "07" : "06") : (outputMode === "poster" ? "06" : "05");
+  const outputStep = mode === "sources" ? "04" : "03";
+  const backgroundStep = mode === "sources" ? "05" : "04";
+  const finishStep = mode === "sources" ? (outputMode === "poster" ? "06" : "05") : (outputMode === "poster" ? "05" : "04");
 
   return <main className="app-shell">
-    <header className="topbar"><div className="brand-mark">A</div><div><p className="eyebrow">JULY ANNIE</p><h1>安妮内容卡片生成器</h1></div><div className="privacy-badge"><ShieldCheck weight="fill" /> 选观点 · 调文字 · 直接下载</div></header>
+    <header className="topbar"><div className="brand-mark">A</div><div><p className="eyebrow">JULY ANNIE</p><h1>安妮内容卡片生成器</h1></div><button className="topbar-account" onClick={() => setAccountModalOpen(true)}><img src={activeAccount.avatarUrl} alt="" /><span><strong>{activeAccount.displayName}</strong><small>{activeAccount.handle}</small></span><CaretDown weight="bold" /></button></header>
     <div className="app-grid">
       <aside className="control-panel">
         <section className="panel-section mode-section"><div className="section-heading"><span className="step-number">01</span><div><h2>选择内容来源</h2><p>从安妮公众号精简内容或自由编辑开始</p></div></div><div className="segmented-control two"><button className={mode === "sources" ? "active" : ""} onClick={() => switchMode("sources")}>安妮素材库</button><button className={mode === "draft" ? "active" : ""} onClick={() => switchMode("draft")}>自由编辑</button></div></section>
@@ -378,19 +441,11 @@ export function App() {
           <div className="section-heading compact"><span className="step-number">02</span><div><h2>{contentSources.length.toLocaleString("zh-CN")} 条中文成品素材</h2><p>当前筛选 {sourceResults.length} 条，选一个就能生成</p></div></div>
           <div className="search-row"><label className="search-box"><MagnifyingGlass /><input value={sourceQuery} onChange={(event) => setSourceQuery(event.target.value)} placeholder="搜：选择、关系、自由、写作、做自己" /></label><button className="icon-button" onClick={pickRandomSource} title="从当前结果随机一条" aria-label="随机一条素材"><Shuffle /></button></div>
           <div className="category-pills">{sourceCategories.map((category) => <button key={category} className={sourceCategory === category ? "active" : ""} onClick={() => setSourceCategory(category)}>{category}</button>)}</div>
-          <div className="source-list">{visibleSourceResults.map((source) => <article key={source.id} className={`source-item ${source.id === selectedSource.id ? "selected" : ""}`}><button className="source-main" onClick={() => selectSource(source)}><span className="source-meta"><b>{source.category}</b><em>{source.productFit.join(" · ")}</em></span><strong>{source.title}</strong><p>{source.insight}</p></button><span className="source-origin">{source.sourceName}</span></article>)}</div>
+          <div className="source-list">{visibleSourceResults.map((source) => <article key={source.id} className={`source-item ${source.id === selectedSource?.id ? "selected" : ""}`}><button className="source-main" onClick={() => selectSource(source)}><span className="source-meta"><b>{source.category}</b><em>{source.productFit.join(" · ")}</em></span><strong>{source.title}</strong><p>{source.insight}</p></button><span className="source-origin"><i className={source.scope === "public" ? "scope-public" : "scope-account"}>{source.scope === "public" ? "公共" : source.ownerDisplayName || activeAccount.displayName}</i>{source.sourceName}</span></article>)}</div>
           <p className="source-note"><ShieldCheck weight="fill" /> 素材来自安妮公众号原文的精简整理。发布前请复核当前观点、数据、个人经历和收益表述。</p>
         </section>}
         {mode === "sources" && <section className="panel-section editor-section"><div className="section-heading compact"><span className="step-number">03</span><div><h2>调整生成内容</h2><p>保留事实，改成你自己真实说话的方式</p></div></div><textarea value={sourceDraft} onChange={(event) => setSourceDraft(event.target.value)} rows={10} /><div className="editor-actions"><span>{sourceDraft.length} 字</span><button className="secondary-button" onClick={() => setSourceDraft(createSourceDraft(selectedSource))}><Sparkle weight="fill" /> 重新生成</button></div></section>}
         {mode === "draft" && <section className="panel-section editor-section"><div className="section-heading compact"><span className="step-number">02</span><div><h2>自由编辑内容</h2><p>粘贴或直接写一条自己的内容</p></div></div><textarea value={draft} onChange={(event) => setDraft(event.target.value)} rows={12} /><div className="editor-actions"><span>{draft.length} 字</span><button className="secondary-button" onClick={() => setDraft(sourceDraft)}><Sparkle weight="fill" /> 载入当前素材</button></div><p className="rewrite-note">发布前检查事实、数据、个人经历和收益表述，确保符合安妮当前观点。</p></section>}
-        <section className="panel-section identity-section">
-          <div className="section-heading compact"><span className="step-number">{identityStep}</span><div><h2>切换账号身份</h2><p>头像、昵称和账号会同步到预览与下载图片</p></div></div>
-          <div className="identity-editor">
-            <div className="identity-avatar-preview"><img src={avatar} alt="当前头像" /><label><UploadSimple />更换头像<input type="file" accept="image/*" onChange={loadAvatar} /></label></div>
-            <div className="identity-fields"><label><span>昵称</span><input value={displayName} maxLength={20} onChange={(event) => setDisplayName(event.target.value)} placeholder="输入昵称" /></label><label><span>账号</span><input value={account} maxLength={32} onChange={(event) => updateAccount(event.target.value)} placeholder="@账号" /></label></div>
-          </div>
-          <button className="identity-reset" type="button" onClick={resetIdentity}>恢复安妮默认身份</button>
-        </section>
         <section className="panel-section output-section"><div className="section-heading compact"><span className="step-number">{outputStep}</span><div><h2>选择发布样式</h2><p>背景始终为抖音竖图，只调整推文卡片</p></div></div><div className="output-picker"><button className={outputMode === "poster" ? "active" : ""} onClick={() => setOutputMode("poster")}><ImageSquare weight="fill" /><strong>背景图成品</strong><span>固定竖版 3:4 背景</span></button><button className={outputMode === "card" ? "active" : ""} onClick={() => setOutputMode("card")}><BookmarkSimple weight="fill" /><strong>纯推文卡片</strong><span>没有额外背景</span></button></div><div className="orientation-control"><span>推文卡片版式</span><div className="orientation-picker" role="group" aria-label="选择推文卡片版式"><button type="button" className={orientation === "portrait" ? "active" : ""} onClick={() => setOrientation("portrait")}><i className="orientation-icon portrait" />竖版卡片</button><button type="button" className={orientation === "landscape" ? "active" : ""} onClick={() => setOrientation("landscape")}><i className="orientation-icon landscape" />横版卡片</button></div><small>系统会根据内容长度自动调整字号和卡片高度，背景画布不会改变。</small></div><button className="random-data-button" type="button" onClick={randomizePostData}><Shuffle weight="bold" /><span><strong>换日期和互动数据</strong><small>日期、查看、回复、转发、点赞与收藏会成套更新</small></span></button></section>
         {outputMode === "poster" && <section className="panel-section background-section">
           <div className="section-heading compact"><span className="step-number">{backgroundStep}</span><div><h2>选择背景</h2><p>内置图库、本地上传、网络图片都能用</p></div></div>
@@ -412,12 +467,23 @@ export function App() {
         </section>
       </aside>
       <section className="preview-panel">
-        <div className="preview-toolbar"><div><span className={`status-dot ${mode}`} /><strong>{outputMode === "poster" ? `竖版 3:4 背景 · ${orientation === "portrait" ? "竖版" : "横版"}卡片` : `${orientation === "portrait" ? "竖版" : "横版"}纯卡片预览`}</strong></div><div className="toolbar-actions"><span>{mode === "sources" ? selectedSource.sourceArticle : "自由编辑"}</span></div></div>
-        <div className={`preview-stage ${outputMode} ${orientation}`}>{outputMode === "poster" ? <div className="douyin-poster" ref={exportRef}><img className="poster-background" src={background} crossOrigin="anonymous" alt="" /><div className="poster-overlay" style={{ background: `rgba(0,0,0,${overlay / 100})` }} /><div className={`poster-card-wrap wrap-${orientation}`} style={{ left: `calc(50% + ${cardPosition.x}px)`, top: `calc(50% + ${cardPosition.y}px)`, transform: `translate(-50%, -50%) scale(${cardScale * posterFitScale})` }} onPointerDown={startDragging} onPointerMove={dragCard} onPointerUp={stopDragging} onPointerCancel={stopDragging} onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd}><TweetCard text={activeText} fontSize={adaptivePosterFontSize} cardTheme={cardTheme} avatar={avatar} displayName={displayName || "未命名"} account={account} interactions={interactions} postedAt={postedAt} orientation={orientation} poster /></div></div> : <TweetCard cardRef={exportRef} text={activeText} fontSize={adaptiveCardFontSize} cardTheme={cardTheme} avatar={avatar} displayName={displayName || "未命名"} account={account} interactions={interactions} postedAt={postedAt} orientation={orientation} />}</div>
+        <div className="preview-toolbar"><div><span className={`status-dot ${mode}`} /><strong>{outputMode === "poster" ? `竖版 3:4 背景 · ${orientation === "portrait" ? "竖版" : "横版"}卡片` : `${orientation === "portrait" ? "竖版" : "横版"}纯卡片预览`}</strong></div><div className="toolbar-actions"><span>{mode === "sources" ? selectedSource?.sourceArticle || "账号内容库" : "自由编辑"}</span></div></div>
+        <div className={`preview-stage ${outputMode} ${orientation}`}>{outputMode === "poster" ? <div className="douyin-poster" ref={exportRef}><img className="poster-background" src={background} crossOrigin="anonymous" alt="" /><div className="poster-overlay" style={{ background: `rgba(0,0,0,${overlay / 100})` }} /><div className={`poster-card-wrap wrap-${orientation}`} style={{ left: `calc(50% + ${cardPosition.x}px)`, top: `calc(50% + ${cardPosition.y}px)`, transform: `translate(-50%, -50%) scale(${cardScale * posterFitScale})` }} onPointerDown={startDragging} onPointerMove={dragCard} onPointerUp={stopDragging} onPointerCancel={stopDragging} onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd}><TweetCard text={activeText} fontSize={adaptivePosterFontSize} cardTheme={cardTheme} avatar={activeAccount.avatarUrl} displayName={activeAccount.displayName || "未命名"} account={activeAccount.handle} interactions={interactions} postedAt={postedAt} orientation={orientation} poster /></div></div> : <TweetCard cardRef={exportRef} text={activeText} fontSize={adaptiveCardFontSize} cardTheme={cardTheme} avatar={activeAccount.avatarUrl} displayName={activeAccount.displayName || "未命名"} account={activeAccount.handle} interactions={interactions} postedAt={postedAt} orientation={orientation} />}</div>
         <div className="export-bar"><div className="export-note"><Check weight="bold" /><span>{isMobile ? "生成后在系统面板选择“存储图像”，即可保存到相册。" : outputMode === "poster" ? "下载图片，再复制发布文案，就能直接发抖音。" : "下载纯推文卡片 PNG。"}</span></div><div className="export-actions"><button className="copy-export-button" onClick={copyDescription}><CopySimple weight="bold" /> 复制发布文案</button><button className="download-button" onClick={downloadImage} disabled={exporting}>{exported ? <Check weight="bold" /> : <DownloadSimple weight="bold" />}{exporting ? "正在生成…" : exported ? (isMobile ? "已生成" : "已下载") : (isMobile ? "保存到相册" : "一键下载成品")}</button></div></div>
       </section>
     </div>
-    <div className="poster-export-surface" aria-hidden="true"><div className="douyin-poster" ref={posterExportRef}><img className="poster-background" src={background} crossOrigin="anonymous" alt="" /><div className="poster-overlay" style={{ background: `rgba(0,0,0,${overlay / 100})` }} /><div className={`poster-card-wrap wrap-${orientation}`} style={{ left: `calc(50% + ${cardPosition.x}px)`, top: `calc(50% + ${cardPosition.y}px)`, transform: `translate(-50%, -50%) scale(${cardScale * posterFitScale})` }}><TweetCard text={activeText} fontSize={adaptivePosterFontSize} cardTheme={cardTheme} avatar={avatar} displayName={displayName || "未命名"} account={account} interactions={interactions} postedAt={postedAt} orientation={orientation} poster /></div></div></div>
-    <div className="direct-card-export" aria-hidden="true"><TweetCard cardRef={directCardRef} text={activeText} fontSize={adaptiveCardFontSize} cardTheme={cardTheme} avatar={avatar} displayName={displayName || "未命名"} account={account} interactions={interactions} postedAt={postedAt} orientation={orientation} /></div>
+    <AccountManagerModal
+      open={accountModalOpen}
+      accounts={accounts}
+      activeAccount={activeAccount}
+      content={contentSources}
+      sharedContentCount={sharedContentCount}
+      onClose={() => setAccountModalOpen(false)}
+      onSelect={switchAccountIdentity}
+      onAccountsChanged={handleAccountsChanged}
+      onContentChanged={() => refreshContent(activeAccountId, selectedSourceId)}
+    />
+    <div className="poster-export-surface" aria-hidden="true"><div className="douyin-poster" ref={posterExportRef}><img className="poster-background" src={background} crossOrigin="anonymous" alt="" /><div className="poster-overlay" style={{ background: `rgba(0,0,0,${overlay / 100})` }} /><div className={`poster-card-wrap wrap-${orientation}`} style={{ left: `calc(50% + ${cardPosition.x}px)`, top: `calc(50% + ${cardPosition.y}px)`, transform: `translate(-50%, -50%) scale(${cardScale * posterFitScale})` }}><TweetCard text={activeText} fontSize={adaptivePosterFontSize} cardTheme={cardTheme} avatar={activeAccount.avatarUrl} displayName={activeAccount.displayName || "未命名"} account={activeAccount.handle} interactions={interactions} postedAt={postedAt} orientation={orientation} poster /></div></div></div>
+    <div className="direct-card-export" aria-hidden="true"><TweetCard cardRef={directCardRef} text={activeText} fontSize={adaptiveCardFontSize} cardTheme={cardTheme} avatar={activeAccount.avatarUrl} displayName={activeAccount.displayName || "未命名"} account={activeAccount.handle} interactions={interactions} postedAt={postedAt} orientation={orientation} /></div>
   </main>;
 }

@@ -1,0 +1,1 @@
+CREATE INDEX `idx_contents_owner_account_id` ON `contents` (`owner_account_id`);

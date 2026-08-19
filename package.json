@@ -8,6 +8,8 @@
   "scripts": {
     "dev": "vite",
     "assets:build": "node scripts/build-generated-backgrounds.mjs",
+    "db:generate": "drizzle-kit generate",
+    "db:seed": "node scripts/build-content-seed.mjs",
     "build": "npm run assets:build && vite build && node scripts/prepare-sites-build.mjs",
     "preview": "vite preview",
     "test:sites": "node --test tests/sites-worker.test.mjs"
@@ -15,6 +17,7 @@
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
     "@vitejs/plugin-react": "5.0.4",
+    "drizzle-orm": "^0.45.2",
     "html-to-image": "^1.11.13",
     "react": "19.2.0",
     "react-dom": "19.2.0",
@@ -22,6 +25,7 @@
   },
   "devDependencies": {
     "caniuse-lite": "^1.0.30001809",
+    "drizzle-kit": "^0.31.10",
     "node-releases": "^2.0.53"
   }
 }
