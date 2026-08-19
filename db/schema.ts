@@ -37,3 +37,13 @@ export const adminLoginAttempts = sqliteTable("admin_login_attempts", {
   lockedUntil: integer("locked_until").notNull().default(0),
   updatedAt: integer("updated_at").notNull(),
 });
+
+export const backgrounds = sqliteTable("backgrounds", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  tags: text("tags").notNull().default(""),
+  imageUrl: text("image_url").notNull(),
+  storageKey: text("storage_key"),
+  displayOrder: integer("display_order").notNull().default(0),
+  createdAt: text("created_at").notNull(),
+});

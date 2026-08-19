@@ -8,8 +8,14 @@ export default {
       if (requestUrl.pathname === "/api/content" && request.method === "GET") {
         return listContent(requestUrl, env);
       }
+      if (requestUrl.pathname === "/api/backgrounds" && request.method === "GET") {
+        return listBackgrounds(env);
+      }
       if (requestUrl.pathname.startsWith("/api/avatar/") && request.method === "GET") {
         return serveAvatar(requestUrl, env);
+      }
+      if (requestUrl.pathname.startsWith("/api/background/") && request.method === "GET") {
+        return serveBackground(requestUrl, env);
       }
       if (requestUrl.pathname.startsWith("/api/admin/")) {
         return handleAdminRequest(request, requestUrl, env);
@@ -72,6 +78,7 @@ const SESSION_SECONDS = 30 * 60;
 const LOCK_SECONDS = 15 * 60;
 const MAX_LOGIN_FAILURES = 5;
 const AVATAR_MAX_BYTES = 5 * 1024 * 1024;
+const BACKGROUND_MAX_BYTES = 10 * 1024 * 1024;
 
 async function listAccounts(env) {
   requireDb(env);
@@ -112,10 +119,33 @@ async function listContent(url, env) {
   return apiJson({ content: (result.results || []).map(mapContentRow) });
 }
 
+async function listBackgrounds(env) {
+  requireDb(env);
+  const result = await env.DB.prepare(`
+    SELECT id, name, tags, image_url, storage_key, display_order, created_at
+    FROM backgrounds
+    ORDER BY display_order ASC, created_at ASC, id ASC
+  `).all();
+  return apiJson({ backgrounds: (result.results || []).map(mapBackgroundRow) });
+}
+
 async function serveAvatar(url, env) {
   if (!env.AVATARS) return apiError("头像存储暂不可用。", 503);
   const key = decodeURIComponent(url.pathname.slice("/api/avatar/".length));
   if (!key || key.includes("..")) return apiError("头像地址无效。", 400);
+  const object = await env.AVATARS.get(key);
+  if (!object) return new Response("Not found", { status: 404 });
+  const headers = new Headers();
+  object.writeHttpMetadata?.(headers);
+  headers.set("Cache-Control", "public, max-age=31536000, immutable");
+  headers.set("ETag", object.httpEtag || object.etag || key);
+  return new Response(object.body, { headers });
+}
+
+async function serveBackground(url, env) {
+  if (!env.AVATARS) return apiError("背景存储暂不可用。", 503);
+  const key = decodeURIComponent(url.pathname.slice("/api/background/".length));
+  if (!key || key.includes("..") || !key.startsWith("backgrounds/")) return apiError("背景地址无效。", 400);
   const object = await env.AVATARS.get(key);
   if (!object) return new Response("Not found", { status: 404 });
   const headers = new Headers();
@@ -143,6 +173,8 @@ async function handleAdminRequest(request, url, env) {
   if (url.pathname.startsWith("/api/admin/content/") && request.method === "PUT") return updateContent(request, url, env);
   if (url.pathname.startsWith("/api/admin/content/") && request.method === "DELETE") return deleteContent(url, env);
   if (url.pathname === "/api/admin/avatar" && request.method === "POST") return uploadAvatar(request, env);
+  if (url.pathname === "/api/admin/backgrounds" && request.method === "POST") return createBackground(request, env);
+  if (url.pathname.startsWith("/api/admin/backgrounds/") && request.method === "DELETE") return deleteBackground(url, env);
   return apiError("没有这个管理操作。", 404);
 }
 
@@ -273,6 +305,50 @@ async function uploadAvatar(request, env) {
   return apiJson({ avatarUrl: `/api/avatar/${encodeURIComponent(key)}` }, 201);
 }
 
+async function createBackground(request, env) {
+  if (!env.AVATARS) return apiError("背景存储暂不可用。", 503);
+  const length = Number(request.headers.get("content-length") || 0);
+  if (length > BACKGROUND_MAX_BYTES + 300000) return apiError("背景图片不能超过10MB。", 413);
+  const form = await request.formData();
+  const file = form.get("image");
+  const name = String(form.get("name") || "").trim().slice(0, 40);
+  const tags = String(form.get("tags") || "").trim().replace(/\s+/g, " ").slice(0, 200);
+  if (!name) return apiError("请填写背景名称。", 400);
+  if (!file || typeof file.arrayBuffer !== "function") return apiError("请选择背景图片。", 400);
+  if (file.size > BACKGROUND_MAX_BYTES) return apiError("背景图片不能超过10MB。", 413);
+  const extensions = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
+  const extension = extensions[file.type];
+  if (!extension) return apiError("背景仅支持 JPEG、PNG 或 WebP。", 400);
+
+  const id = `background-${crypto.randomUUID()}`;
+  const storageKey = `backgrounds/${crypto.randomUUID()}.${extension}`;
+  const imageUrl = `/api/background/${encodeURIComponent(storageKey)}`;
+  const createdAt = new Date().toISOString();
+  const orderRow = await env.DB.prepare("SELECT COALESCE(MAX(display_order), 0) AS max_order FROM backgrounds").first();
+  await env.AVATARS.put(storageKey, await file.arrayBuffer(), { httpMetadata: { contentType: file.type } });
+  try {
+    await env.DB.prepare("INSERT INTO backgrounds (id, name, tags, image_url, storage_key, display_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .bind(id, name, tags, imageUrl, storageKey, Number(orderRow?.max_order || 0) + 1, createdAt).run();
+  } catch (error) {
+    try { await env.AVATARS.delete(storageKey); } catch { /* best-effort cleanup */ }
+    throw error;
+  }
+  return apiJson({ background: { id, name, tags, src: imageUrl, storageKey, createdAt } }, 201);
+}
+
+async function deleteBackground(url, env) {
+  const id = pathId(url, "/api/admin/backgrounds/");
+  const total = await env.DB.prepare("SELECT COUNT(*) AS count FROM backgrounds").first();
+  if (Number(total?.count || 0) <= 1) return apiError("至少需要保留一张背景。", 409);
+  const background = await env.DB.prepare("SELECT id, storage_key FROM backgrounds WHERE id = ?").bind(id).first();
+  if (!background) return apiError("背景不存在。", 404);
+  await env.DB.prepare("DELETE FROM backgrounds WHERE id = ?").bind(id).run();
+  if (background.storage_key && env.AVATARS) {
+    try { await env.AVATARS.delete(background.storage_key); } catch { /* metadata deletion already succeeded */ }
+  }
+  return apiJson({ deleted: true, id });
+}
+
 function validateAccount(payload) {
   const displayName = String(payload.displayName || "").trim().slice(0, 20);
   const handleValue = String(payload.handle || "").trim().replace(/^@+/, "").replace(/\s+/g, "").slice(0, 31);
@@ -340,6 +416,18 @@ function mapContentRow(row) {
     title: row.title,
     draft: row.draft,
     insight: row.insight,
+  };
+}
+
+function mapBackgroundRow(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    tags: row.tags || "",
+    src: row.image_url,
+    storageKey: row.storage_key || null,
+    displayOrder: Number(row.display_order || 0),
+    createdAt: row.created_at,
   };
 }
 

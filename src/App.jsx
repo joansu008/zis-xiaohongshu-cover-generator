@@ -3,17 +3,18 @@ import { toPng } from "html-to-image";
 import {
   ArrowsClockwise, BookmarkSimple, ChatCircle, Check, CopySimple, DownloadSimple,
   CaretDown, DotsThree, Heart, ImageSquare, MagnifyingGlass, SealCheck, ShareNetwork,
-  ShieldCheck, Shuffle, Sparkle, UploadSimple, WarningCircle,
+  PencilSimple, ShieldCheck, Shuffle, Sparkle, UploadSimple, WarningCircle,
 } from "@phosphor-icons/react";
 import baseContentSources from "./content-sources.json";
 import { AccountManagerModal } from "./AccountManagerModal.jsx";
+import { BackgroundManagerModal } from "./BackgroundManagerModal.jsx";
 
 const fallbackAccount = {
   id: "annie-default", displayName: "安妮", handle: "@kiki89699", avatarUrl: "/annie-avatar.jpg",
   exclusiveContentCount: 0, contentCount: baseContentSources.length,
 };
 const fallbackContentSources = baseContentSources.map((source) => ({ ...source, ownerAccountId: null, ownerDisplayName: null, scope: "public" }));
-const backgrounds = [
+const fallbackBackgrounds = [
   { id: "city-1", name: "香港海边", tags: "香港 城市 海边 蓝天", src: "/backgrounds/city-1.jpg" },
   { id: "city-2", name: "城市天际线", tags: "香港 城市 天际线 日落", src: "/backgrounds/city-2.jpg" },
   { id: "city-3", name: "街头夜景", tags: "城市 街头 夜景 情绪", src: "/backgrounds/city-3.jpg" },
@@ -38,6 +39,13 @@ const backgrounds = [
   { id: "cloud", name: "云上蓝天", tags: "蓝天 云朵 清新 自由", src: "/backgrounds/generated-cloud.svg" },
   { id: "matrix", name: "矩阵光线", tags: "矩阵 光线 绿色 黑色 科技", src: "/backgrounds/generated-matrix.svg" },
 ];
+
+function pickNextBackground(backgroundList, currentSource) {
+  if (!backgroundList.length) return currentSource;
+  const alternatives = backgroundList.filter((item) => item.src !== currentSource);
+  const pool = alternatives.length ? alternatives : backgroundList;
+  return pool[Math.floor(Math.random() * pool.length)].src;
+}
 
 function getAdaptiveFontSize(text, preferred, poster = false) {
   const length = text.replace(/\s+/g, "").length;
@@ -154,7 +162,7 @@ function TweetCard({ cardRef, text, fontSize, cardTheme, avatar, displayName, ac
   const postDate = new Date(postedAt);
   const dateLabel = `${postDate.getFullYear()}年${postDate.getMonth() + 1}月${postDate.getDate()}日`;
   const timeLabel = `${postDate.getHours() < 12 ? "上午" : "下午"}${postDate.getHours() % 12 || 12}:${String(postDate.getMinutes()).padStart(2, "0")}`;
-  return <article className={`tweet-card theme-${cardTheme} card-${orientation} ${poster ? "poster-tweet-card" : ""}`} ref={cardRef} aria-label="安妮内容卡片预览">
+  return <article className={`tweet-card theme-${cardTheme} card-${orientation} ${poster ? "poster-tweet-card" : ""}`} ref={cardRef} aria-label="zis图文内容卡片预览">
     <header className="tweet-header">
       <img className="tweet-avatar annie-avatar" src={avatar} alt={`${displayName}头像`} />
       <div className="tweet-identity"><div className="tweet-name-line"><strong>{displayName}</strong><SealCheck weight="fill" className="verified-icon" /></div><div className="tweet-account-line">{account} · {postDate.getMonth() + 1}月{postDate.getDate()}日</div></div>
@@ -180,6 +188,7 @@ export function App() {
   const [contentSources, setContentSources] = useState(fallbackContentSources);
   const [sharedContentCount, setSharedContentCount] = useState(fallbackContentSources.length);
   const [accountModalOpen, setAccountModalOpen] = useState(false);
+  const [backgroundManagerOpen, setBackgroundManagerOpen] = useState(false);
   const [mode, setMode] = useState("sources");
   const [outputMode, setOutputMode] = useState("poster");
   const [orientation, setOrientation] = useState("portrait");
@@ -192,7 +201,12 @@ export function App() {
   const [cardTheme, setCardTheme] = useState("light");
   const [interactions, setInteractions] = useState(() => createInteractionData());
   const [postedAt, setPostedAt] = useState(() => createRandomPostDate());
-  const [background, setBackground] = useState(backgrounds[0].src);
+  const [backgroundLibrary, setBackgroundLibrary] = useState(fallbackBackgrounds);
+  const [background, setBackground] = useState(fallbackBackgrounds[0].src);
+  const [randomBackgroundEnabled, setRandomBackgroundEnabled] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return window.localStorage.getItem("zis-random-background") !== "false";
+  });
   const [backgroundQuery, setBackgroundQuery] = useState("");
   const [backgroundUrl, setBackgroundUrl] = useState("");
   const [overlay, setOverlay] = useState(18);
@@ -222,8 +236,8 @@ export function App() {
   const visibleSourceResults = sourceResults.slice(0, 100);
   const backgroundResults = useMemo(() => {
     const needle = backgroundQuery.trim().toLowerCase();
-    return backgrounds.filter((item) => !needle || `${item.name} ${item.tags}`.toLowerCase().includes(needle));
-  }, [backgroundQuery]);
+    return backgroundLibrary.filter((item) => !needle || `${item.name} ${item.tags}`.toLowerCase().includes(needle));
+  }, [backgroundLibrary, backgroundQuery]);
   useEffect(() => setExported(false), [mode, outputMode, orientation, draft, sourceDraft, fontSize, cardTheme, background, overlay, cardScale, cardPosition, activeAccount, interactions, postedAt]);
   useEffect(() => setCardPosition({ x: 0, y: 0 }), [orientation]);
   useEffect(() => { setPublishCopy(""); setCopyStatus(""); }, [mode, draft, sourceDraft]);
@@ -235,6 +249,7 @@ export function App() {
     })();
     return () => { cancelled = true; };
   }, []);
+  useEffect(() => { refreshBackgrounds({ randomizeInitial: true }); }, []);
 
   async function refreshAccounts(preferredId = null, deletedId = null) {
     try {
@@ -258,6 +273,39 @@ export function App() {
       setSharedContentCount(fallbackContentSources.length);
       return fallbackAccount;
     }
+  }
+
+  async function refreshBackgrounds({ deletedId = null, randomizeInitial = false } = {}) {
+    let nextBackgrounds = fallbackBackgrounds;
+    try {
+      const response = await fetch("/api/backgrounds", { cache: "no-store" });
+      if (!response.ok) throw new Error("backgrounds unavailable");
+      const payload = await response.json();
+      if (!payload.backgrounds?.length) throw new Error("empty backgrounds");
+      nextBackgrounds = payload.backgrounds;
+    } catch {
+      nextBackgrounds = fallbackBackgrounds;
+    }
+    const deletedSource = deletedId ? backgroundLibrary.find((item) => item.id === deletedId)?.src : null;
+    setBackgroundLibrary(nextBackgrounds);
+    setBackground((current) => {
+      if (deletedSource && current === deletedSource) return nextBackgrounds[0]?.src || current;
+      if (randomizeInitial && randomBackgroundEnabled) return pickNextBackground(nextBackgrounds, current);
+      if (randomizeInitial && !nextBackgrounds.some((item) => item.src === current)) return nextBackgrounds[0]?.src || current;
+      return current;
+    });
+    return nextBackgrounds;
+  }
+
+  function randomizeBackground() {
+    if (!randomBackgroundEnabled) return;
+    setBackground((current) => pickNextBackground(backgroundLibrary, current));
+  }
+
+  function setRandomBackground(nextEnabled) {
+    setRandomBackgroundEnabled(nextEnabled);
+    window.localStorage.setItem("zis-random-background", String(nextEnabled));
+    if (nextEnabled) setBackground((current) => pickNextBackground(backgroundLibrary, current));
   }
 
   async function refreshContent(accountId = activeAccountId, preferredSourceId = null) {
@@ -284,6 +332,7 @@ export function App() {
     setActiveAccountId(nextAccount.id);
     window.localStorage.setItem("annie-active-account", nextAccount.id);
     randomizePostData();
+    randomizeBackground();
     await refreshContent(nextAccount.id);
     setAccountModalOpen(false);
   }
@@ -301,6 +350,7 @@ export function App() {
     setSourceDraft(createSourceDraft(source));
     window.localStorage.setItem(`annie-last-source:${activeAccountId}`, source.id);
     randomizePostData();
+    randomizeBackground();
   }
   function pickRandomSource() {
     const pool = sourceResults.length ? sourceResults : contentSources;
@@ -419,13 +469,13 @@ export function App() {
   async function downloadImage() {
     const fileLabel = new Date().toISOString().slice(0, 10);
     const direction = orientation === "landscape" ? "横版" : "竖版";
-    const filename = outputMode === "poster" ? `安妮图文-${direction}-${fileLabel}.png` : `安妮内容卡片-${direction}-${fileLabel}.png`;
+    const filename = `zis图文内容卡片-${direction}-${fileLabel}.png`;
     return exportNode(outputMode === "poster" ? posterExportRef.current : exportRef.current, filename, outputMode === "poster" ? "#161616" : cardTheme === "light" ? "#ffffff" : "#000000");
   }
   async function exportDirectCard() {
     const fileLabel = new Date().toISOString().slice(0, 10);
     const direction = orientation === "landscape" ? "横版" : "竖版";
-    return exportNode(directCardRef.current, `安妮纯卡片-${direction}-${fileLabel}.png`, cardTheme === "light" ? "#ffffff" : "#000000");
+    return exportNode(directCardRef.current, `zis图文内容卡片-${direction}-${fileLabel}.png`, cardTheme === "light" ? "#ffffff" : "#000000");
   }
 
   const outputStep = mode === "sources" ? "04" : "03";
@@ -433,7 +483,7 @@ export function App() {
   const finishStep = mode === "sources" ? (outputMode === "poster" ? "06" : "05") : (outputMode === "poster" ? "05" : "04");
 
   return <main className="app-shell">
-    <header className="topbar"><div className="brand-mark">A</div><div><p className="eyebrow">JULY ANNIE</p><h1>安妮内容卡片生成器</h1></div><button className="topbar-account" onClick={() => setAccountModalOpen(true)}><img src={activeAccount.avatarUrl} alt="" /><span><strong>{activeAccount.displayName}</strong><small>{activeAccount.handle}</small></span><CaretDown weight="bold" /></button></header>
+    <header className="topbar"><div className="brand-mark">ZIS</div><div><p className="eyebrow">CONTENT CARD</p><h1>zis图文内容卡片生成器</h1></div><button className="topbar-account" onClick={() => setAccountModalOpen(true)}><img src={activeAccount.avatarUrl} alt="" /><span><strong>{activeAccount.displayName}</strong><small>{activeAccount.handle}</small></span><CaretDown weight="bold" /></button></header>
     <div className="app-grid">
       <aside className="control-panel">
         <section className="panel-section mode-section"><div className="section-heading"><span className="step-number">01</span><div><h2>选择内容来源</h2><p>从安妮公众号精简内容或自由编辑开始</p></div></div><div className="segmented-control two"><button className={mode === "sources" ? "active" : ""} onClick={() => switchMode("sources")}>安妮素材库</button><button className={mode === "draft" ? "active" : ""} onClick={() => switchMode("draft")}>自由编辑</button></div></section>
@@ -448,7 +498,8 @@ export function App() {
         {mode === "draft" && <section className="panel-section editor-section"><div className="section-heading compact"><span className="step-number">02</span><div><h2>自由编辑内容</h2><p>粘贴或直接写一条自己的内容</p></div></div><textarea value={draft} onChange={(event) => setDraft(event.target.value)} rows={12} /><div className="editor-actions"><span>{draft.length} 字</span><button className="secondary-button" onClick={() => setDraft(sourceDraft)}><Sparkle weight="fill" /> 载入当前素材</button></div><p className="rewrite-note">发布前检查事实、数据、个人经历和收益表述，确保符合安妮当前观点。</p></section>}
         <section className="panel-section output-section"><div className="section-heading compact"><span className="step-number">{outputStep}</span><div><h2>选择发布样式</h2><p>背景始终为抖音竖图，只调整推文卡片</p></div></div><div className="output-picker"><button className={outputMode === "poster" ? "active" : ""} onClick={() => setOutputMode("poster")}><ImageSquare weight="fill" /><strong>背景图成品</strong><span>固定竖版 3:4 背景</span></button><button className={outputMode === "card" ? "active" : ""} onClick={() => setOutputMode("card")}><BookmarkSimple weight="fill" /><strong>纯推文卡片</strong><span>没有额外背景</span></button></div><div className="orientation-control"><span>推文卡片版式</span><div className="orientation-picker" role="group" aria-label="选择推文卡片版式"><button type="button" className={orientation === "portrait" ? "active" : ""} onClick={() => setOrientation("portrait")}><i className="orientation-icon portrait" />竖版卡片</button><button type="button" className={orientation === "landscape" ? "active" : ""} onClick={() => setOrientation("landscape")}><i className="orientation-icon landscape" />横版卡片</button></div><small>系统会根据内容长度自动调整字号和卡片高度，背景画布不会改变。</small></div><button className="random-data-button" type="button" onClick={randomizePostData}><Shuffle weight="bold" /><span><strong>换日期和互动数据</strong><small>日期、查看、回复、转发、点赞与收藏会成套更新</small></span></button></section>
         {outputMode === "poster" && <section className="panel-section background-section">
-          <div className="section-heading compact"><span className="step-number">{backgroundStep}</span><div><h2>选择背景</h2><p>内置图库、本地上传、网络图片都能用</p></div></div>
+          <div className="background-heading-row"><div className="section-heading compact"><span className="step-number">{backgroundStep}</span><div><h2>选择背景</h2><p>云端图库、本地上传、网络图片都能用</p></div></div><button className="edit-background-button" type="button" onClick={() => setBackgroundManagerOpen(true)}><PencilSimple />编辑背景</button></div>
+          <label className="random-background-toggle"><input type="checkbox" checked={randomBackgroundEnabled} onChange={(event) => setRandomBackground(event.target.checked)} /><span><b>随机背景</b><small>{randomBackgroundEnabled ? "选择新内容时自动换一张" : "当前背景保持不变"}</small></span></label>
           <label className="search-box background-search"><MagnifyingGlass /><input value={backgroundQuery} onChange={(event) => setBackgroundQuery(event.target.value)} placeholder="搜：香港、城市、夜景、山海" /></label>
           <div className="background-grid">{backgroundResults.map((item) => <button key={item.id} className={background === item.src ? "active" : ""} onClick={() => setBackground(item.src)}><img src={item.src} alt={item.name} /><span>{item.name}</span></button>)}</div>
           <div className="background-actions"><label className="upload-button"><UploadSimple /> 上传自己的背景<input type="file" accept="image/*" onChange={loadUpload} /></label><div className="url-row"><input value={backgroundUrl} onChange={(event) => setBackgroundUrl(event.target.value)} placeholder="或粘贴网上的图片地址" /><button onClick={applyBackgroundUrl}>使用</button></div></div>
@@ -482,6 +533,12 @@ export function App() {
       onSelect={switchAccountIdentity}
       onAccountsChanged={handleAccountsChanged}
       onContentChanged={() => refreshContent(activeAccountId, selectedSourceId)}
+    />
+    <BackgroundManagerModal
+      open={backgroundManagerOpen}
+      backgrounds={backgroundLibrary}
+      onClose={() => setBackgroundManagerOpen(false)}
+      onChanged={(deletedId) => refreshBackgrounds({ deletedId })}
     />
     <div className="poster-export-surface" aria-hidden="true"><div className="douyin-poster" ref={posterExportRef}><img className="poster-background" src={background} crossOrigin="anonymous" alt="" /><div className="poster-overlay" style={{ background: `rgba(0,0,0,${overlay / 100})` }} /><div className={`poster-card-wrap wrap-${orientation}`} style={{ left: `calc(50% + ${cardPosition.x}px)`, top: `calc(50% + ${cardPosition.y}px)`, transform: `translate(-50%, -50%) scale(${cardScale * posterFitScale})` }}><TweetCard text={activeText} fontSize={adaptivePosterFontSize} cardTheme={cardTheme} avatar={activeAccount.avatarUrl} displayName={activeAccount.displayName || "未命名"} account={activeAccount.handle} interactions={interactions} postedAt={postedAt} orientation={orientation} poster /></div></div></div>
     <div className="direct-card-export" aria-hidden="true"><TweetCard cardRef={directCardRef} text={activeText} fontSize={adaptiveCardFontSize} cardTheme={cardTheme} avatar={activeAccount.avatarUrl} displayName={activeAccount.displayName || "未命名"} account={activeAccount.handle} interactions={interactions} postedAt={postedAt} orientation={orientation} /></div>

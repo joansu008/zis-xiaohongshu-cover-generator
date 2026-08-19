@@ -72,7 +72,7 @@ a:focus-visible {
   place-items: center;
   background: var(--ink);
   color: white;
-  font-size: 18px;
+  font-size: 12px;
   font-weight: 900;
   letter-spacing: -0.05em;
 }
@@ -641,6 +641,45 @@ a:focus-visible {
 
 .background-search { width: 100%; }
 
+.background-heading-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.edit-background-button {
+  min-height: 34px;
+  padding: 0 9px;
+  border: 1px solid #8e877c;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  background: #fffefa;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 850;
+}
+.edit-background-button:hover { border-color: var(--orange); color: var(--orange); }
+
+.random-background-toggle {
+  min-height: 46px;
+  margin: 10px 0;
+  padding: 8px 10px;
+  border: 1px solid #bcb5a9;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  background: #fffefa;
+  cursor: pointer;
+}
+.random-background-toggle input { width: 17px; height: 17px; accent-color: var(--orange); }
+.random-background-toggle span { display: grid; gap: 2px; }
+.random-background-toggle b { font-size: 10px; }
+.random-background-toggle small { color: var(--muted); font-size: 9px; }
+
 .background-grid {
   margin-top: 9px;
   display: grid;
@@ -1179,6 +1218,41 @@ button.danger { color: #a93419; }
 .account-modal-footer { min-height: 46px; padding: 8px 18px; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 9px; }
 .account-modal-footer button { border: 0; display: flex; align-items: center; gap: 5px; background: transparent; color: #6d2a17; cursor: pointer; font-size: 9px; font-weight: 850; }
 
+.background-manager-modal { width: min(860px, 100%); }
+.background-manager-login { min-height: 310px; padding: 34px 24px; display: grid; justify-items: center; align-content: center; text-align: center; }
+.background-manager-login > svg { color: var(--orange); font-size: 34px; }
+.background-manager-login h3 { margin: 10px 0 4px; font-size: 17px; }
+.background-manager-login > p { max-width: 420px; margin: 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
+.background-manager-login .admin-login { width: min(430px, 100%); text-align: left; }
+.background-manager-body { min-height: 0; padding: 16px 18px 20px; overflow-y: auto; }
+.background-add-form { padding: 14px; border: 1px solid #bcb5a9; display: grid; gap: 12px; background: #eee9e0; }
+.background-add-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.background-add-heading h3 { margin: 0; font-size: 15px; }
+.background-add-heading p { margin: 3px 0 0; color: var(--muted); font-size: 9px; }
+.background-add-heading > svg { color: var(--orange); font-size: 20px; }
+.background-add-grid { display: grid; grid-template-columns: 150px 1fr; gap: 12px; }
+.background-file-picker { min-height: 112px; border: 1px dashed #8e877c; display: grid; place-items: center; align-content: center; gap: 6px; background: #fffefa center / cover no-repeat; cursor: pointer; font-size: 10px; font-weight: 850; }
+.background-file-picker.has-preview { border-style: solid; }
+.background-file-picker > svg { font-size: 22px; }
+.background-file-picker input { display: none; }
+.background-add-fields { display: grid; gap: 8px; }
+.background-add-fields label { display: grid; gap: 4px; color: var(--muted); font-size: 9px; font-weight: 850; }
+.background-add-fields input { width: 100%; min-width: 0; height: 38px; padding: 0 9px; border: 1px solid #bcb5a9; outline: 0; background: #fffefa; }
+.background-add-fields input:focus { border-color: var(--orange); box-shadow: 0 0 0 3px rgba(255, 90, 31, .1); }
+.background-add-fields small { color: var(--muted); font-size: 9px; }
+.background-save-button { min-height: 40px; border: 1px solid var(--ink); color: white; background: var(--ink); cursor: pointer; font-size: 10px; font-weight: 850; }
+.background-save-button:disabled { cursor: not-allowed; opacity: .5; }
+.background-library-heading { margin: 16px 0 8px; display: flex; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 10px; }
+.managed-background-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
+.managed-background-grid article { position: relative; min-width: 0; border: 1px solid #bcb5a9; background: #fffefa; }
+.managed-background-grid article > img { width: 100%; height: 108px; display: block; object-fit: cover; }
+.managed-background-grid article > div { min-width: 0; padding: 8px 38px 8px 9px; display: grid; gap: 3px; }
+.managed-background-grid strong, .managed-background-grid small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.managed-background-grid strong { font-size: 10px; }
+.managed-background-grid small { color: var(--muted); font-size: 8px; }
+.background-delete-button { position: absolute; right: 7px; bottom: 7px; width: 28px; height: 28px; border: 1px solid #bcb5a9; display: grid; place-items: center; color: #a93419; background: #fffefa; cursor: pointer; }
+.background-delete-button:disabled { color: #aaa49a; cursor: not-allowed; opacity: .55; }
+
 .delete-confirm-layer { position: absolute; z-index: 2; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(15,15,15,.58); }
 .delete-confirm-layer > div { width: min(390px, 100%); padding: 22px; border: 1px solid var(--ink); text-align: center; background: #fffefa; box-shadow: 5px 5px 0 var(--ink); }
 .delete-confirm-layer > div > svg { color: #b83a1c; font-size: 30px; }
@@ -1407,4 +1481,9 @@ button.danger { color: #a93419; }
   .content-manager-tools { grid-template-columns: 1fr; }
   .content-form-row { grid-template-columns: 1fr; }
   .account-modal-footer { padding-left: 12px; padding-right: 12px; }
+  .background-manager-body { padding: 13px 12px 18px; }
+  .background-add-grid { grid-template-columns: 1fr; }
+  .background-file-picker { min-height: 150px; }
+  .managed-background-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .managed-background-grid article > img { height: 96px; }
 }

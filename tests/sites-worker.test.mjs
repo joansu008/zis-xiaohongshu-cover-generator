@@ -97,6 +97,7 @@ test("emits the files required by Sites packaging", async () => {
   await access(new URL("../dist/server/index.js", import.meta.url));
   await access(new URL("../dist/.openai/hosting.json", import.meta.url));
   await access(new URL("../drizzle/0000_petite_cloak.sql", import.meta.url));
+  await access(new URL("../drizzle/0002_natural_corsair.sql", import.meta.url));
 });
 
 function createApiDb(seed = {}) {
@@ -105,6 +106,10 @@ function createApiDb(seed = {}) {
     contents: seed.contents || [
       { id: "public-1", owner_account_id: null, category: "公共", title: "公共内容", draft: "公共正文", insight: "摘要", product_fit: "[]", priority: 1, requires_verification: 0 },
       { id: "private-1", owner_account_id: "annie-default", category: "专属", title: "专属内容", draft: "专属正文", insight: "摘要", product_fit: "[]", priority: 1, requires_verification: 0 },
+    ],
+    backgrounds: seed.backgrounds || [
+      { id: "city-1", name: "香港海边", tags: "香港 城市", image_url: "/backgrounds/city-1.jpg", storage_key: null, display_order: 1, created_at: "2026-01-01" },
+      { id: "city-2", name: "城市天际线", tags: "城市 日落", image_url: "/backgrounds/city-2.jpg", storage_key: null, display_order: 2, created_at: "2026-01-01" },
     ],
     attempts: new Map(),
   };
@@ -118,6 +123,9 @@ function createApiDb(seed = {}) {
         if (normalized.includes("COUNT(*) AS count FROM contents WHERE owner_account_id IS NULL")) return { count: state.contents.filter((item) => item.owner_account_id == null).length };
         if (normalized.includes("FROM admin_login_attempts")) return state.attempts.get(args[0]) || null;
         if (normalized === "SELECT COUNT(*) AS count FROM accounts") return { count: state.accounts.length };
+        if (normalized === "SELECT COUNT(*) AS count FROM backgrounds") return { count: state.backgrounds.length };
+        if (normalized.includes("MAX(display_order)")) return { max_order: Math.max(0, ...state.backgrounds.map((item) => item.display_order)) };
+        if (normalized.includes("SELECT id, storage_key FROM backgrounds")) return state.backgrounds.find((item) => item.id === args[0]) || null;
         if (normalized.includes("SELECT avatar_url FROM accounts")) return state.accounts.find((item) => item.id === args[0]) || null;
         if (normalized.includes("COUNT(*) AS count FROM contents WHERE owner_account_id")) return { count: state.contents.filter((item) => item.owner_account_id === args[0]).length };
         if (normalized.includes("SELECT id FROM accounts")) return state.accounts.find((item) => item.id === args[0]) || null;
@@ -135,6 +143,9 @@ function createApiDb(seed = {}) {
             owner_display_name: state.accounts.find((account) => account.id === item.owner_account_id)?.display_name || null,
           })) };
         }
+        if (normalized.includes("FROM backgrounds")) {
+          return { results: [...state.backgrounds].sort((left, right) => left.display_order - right.display_order) };
+        }
         return { results: [] };
       },
       async run() {
@@ -144,6 +155,8 @@ function createApiDb(seed = {}) {
         else if (normalized.startsWith("INSERT INTO accounts")) state.accounts.push({ id: args[0], display_name: args[1], handle: args[2], avatar_url: args[3], created_at: args[4], updated_at: args[5] });
         else if (normalized.startsWith("DELETE FROM contents WHERE owner_account_id")) state.contents = state.contents.filter((item) => item.owner_account_id !== args[0]);
         else if (normalized.startsWith("DELETE FROM accounts")) state.accounts = state.accounts.filter((item) => item.id !== args[0]);
+        else if (normalized.startsWith("INSERT INTO backgrounds")) state.backgrounds.push({ id: args[0], name: args[1], tags: args[2], image_url: args[3], storage_key: args[4], display_order: args[5], created_at: args[6] });
+        else if (normalized.startsWith("DELETE FROM backgrounds")) state.backgrounds = state.backgrounds.filter((item) => item.id !== args[0]);
         return { success: true };
       },
     };
@@ -151,6 +164,16 @@ function createApiDb(seed = {}) {
   }
 
   return { state, prepare, async batch(statements) { for (const statement of statements) await statement.run(); return []; } };
+}
+
+function createR2() {
+  const objects = new Map();
+  return {
+    objects,
+    async put(key, value, options) { objects.set(key, { value, options }); },
+    async delete(key) { objects.delete(key); },
+    async get(key) { return objects.has(key) ? { body: objects.get(key).value, httpEtag: key } : null; },
+  };
 }
 
 test("public account and content APIs expose shared plus account-owned records", async () => {
@@ -165,6 +188,15 @@ test("public account and content APIs expose shared plus account-owned records",
   assert.equal(contentResponse.status, 200);
   const contentPayload = await contentResponse.json();
   assert.deepEqual(contentPayload.content.map((item) => item.scope), ["public", "account"]);
+});
+
+test("public background API exposes the shared ordered library", async () => {
+  const DB = createApiDb();
+  const response = await worker.fetch(new Request("https://example.test/api/backgrounds"), { DB });
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.deepEqual(payload.backgrounds.map((item) => item.name), ["香港海边", "城市天际线"]);
+  assert.equal(payload.backgrounds[0].src, "/backgrounds/city-1.jpg");
 });
 
 test("anonymous visitors cannot call admin write APIs", async () => {
@@ -244,4 +276,67 @@ test("deleting an account removes only its exclusive content", async () => {
   assert.equal((await response.json()).deletedContentCount, 1);
   assert.deepEqual(DB.state.accounts.map((item) => item.id), ["second"]);
   assert.deepEqual(DB.state.contents.map((item) => item.id), ["public-1", "private-2"]);
+});
+
+test("admin can upload a validated background to R2 and the shared library", async () => {
+  const DB = createApiDb();
+  const AVATARS = createR2();
+  const password = "admin-password";
+  const env = { DB, AVATARS, SESSION_SECRET: "session-secret", ADMIN_PASSWORD_HASH: createHash("sha256").update(password).digest("hex") };
+  const login = await worker.fetch(new Request("https://example.test/api/admin/login", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password }),
+  }), env);
+  const form = new FormData();
+  form.append("name", "新背景");
+  form.append("tags", "城市 蓝色");
+  form.append("image", new Blob(["image-bytes"], { type: "image/webp" }), "background.webp");
+  const response = await worker.fetch(new Request("https://example.test/api/admin/backgrounds", {
+    method: "POST", headers: { cookie: login.headers.get("set-cookie") }, body: form,
+  }), env);
+
+  assert.equal(response.status, 201);
+  assert.equal(DB.state.backgrounds.length, 3);
+  assert.equal(AVATARS.objects.size, 1);
+  assert.match(DB.state.backgrounds[2].image_url, /^\/api\/background\//);
+});
+
+test("background uploads reject unsupported files", async () => {
+  const DB = createApiDb();
+  const AVATARS = createR2();
+  const password = "admin-password";
+  const env = { DB, AVATARS, SESSION_SECRET: "session-secret", ADMIN_PASSWORD_HASH: createHash("sha256").update(password).digest("hex") };
+  const login = await worker.fetch(new Request("https://example.test/api/admin/login", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password }),
+  }), env);
+  const form = new FormData();
+  form.append("name", "错误文件");
+  form.append("image", new Blob(["not-an-image"], { type: "text/plain" }), "notes.txt");
+  const response = await worker.fetch(new Request("https://example.test/api/admin/backgrounds", {
+    method: "POST", headers: { cookie: login.headers.get("set-cookie") }, body: form,
+  }), env);
+
+  assert.equal(response.status, 400);
+  assert.equal(DB.state.backgrounds.length, 2);
+  assert.equal(AVATARS.objects.size, 0);
+});
+
+test("deleting backgrounds cleans uploaded objects and protects the last record", async () => {
+  const DB = createApiDb({ backgrounds: [
+    { id: "built-in", name: "内置", tags: "", image_url: "/backgrounds/city-1.jpg", storage_key: null, display_order: 1, created_at: "2026-01-01" },
+    { id: "uploaded", name: "上传", tags: "", image_url: "/api/background/backgrounds%2Fuploaded.webp", storage_key: "backgrounds/uploaded.webp", display_order: 2, created_at: "2026-01-01" },
+  ] });
+  const AVATARS = createR2();
+  await AVATARS.put("backgrounds/uploaded.webp", "bytes");
+  const password = "admin-password";
+  const env = { DB, AVATARS, SESSION_SECRET: "session-secret", ADMIN_PASSWORD_HASH: createHash("sha256").update(password).digest("hex") };
+  const login = await worker.fetch(new Request("https://example.test/api/admin/login", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password }),
+  }), env);
+  const cookie = login.headers.get("set-cookie");
+  const deleted = await worker.fetch(new Request("https://example.test/api/admin/backgrounds/uploaded", { method: "DELETE", headers: { cookie } }), env);
+  assert.equal(deleted.status, 200);
+  assert.equal(AVATARS.objects.size, 0);
+  const finalDelete = await worker.fetch(new Request("https://example.test/api/admin/backgrounds/built-in", { method: "DELETE", headers: { cookie } }), env);
+  assert.equal(finalDelete.status, 409);
+  assert.equal(DB.state.backgrounds.length, 1);
 });
