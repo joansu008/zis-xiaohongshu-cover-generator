@@ -29,5 +29,6 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 
 - Provide “zis小红书封面生成器” as an independent `/xiaohongshu` entry that shares the existing cloud accounts and background library without changing the original card-generator route.
 - Keep the Xiaohongshu content library separate and empty by default. Managers may add, edit, delete, or import up to 500 CSV/XLSX rows; do not seed it from the existing 156公众号卡片 unless the user later supplies or approves new source material.
-- Export Xiaohongshu covers as 1080×1440 PNGs. Support three title-poster templates and three summary-card templates, with draggable/scalable copy, limited alignment/accent/overlay controls, and preview/export parity.
+- Export Xiaohongshu covers as 1080×1440 PNGs. Support four title-poster templates and three summary-card templates, with draggable/scalable copy, limited alignment/accent/overlay controls, and preview/export parity.
+- Include a “高亮口播” title-poster style for portrait/talking-head backgrounds: stacked white and yellow topic labels, a bold black headline with neon-green outline, and a pink highlighted summary phrase, following the user-provided Xiaohongshu profile reference without embedding that screenshot in the product.
 - Generate an editable Xiaohongshu title, body, and 3–5 deduplicated topics through deterministic templates only; do not add external AI rewriting or direct platform publishing in the first version.

@@ -28,6 +28,7 @@ const titleTemplates = [
   { id: "editorial", name: "编辑部网格", description: "强标题 / 杂志感" },
   { id: "photo", name: "摄影蒙版", description: "大图 / 沉浸感" },
   { id: "memo", name: "彩色便签", description: "活泼 / 高点击" },
+  { id: "talking-head", name: "高亮口播", description: "人物 / 爆点字幕" },
 ];
 const summaryTemplates = [
   { id: "paper-note", name: "纸张摘录", description: "温暖 / 阅读感" },
@@ -62,6 +63,16 @@ function excerptFontSize(text) {
   return length > 280 ? 15 : length > 210 ? 17 : length > 140 ? 19 : 21;
 }
 
+function talkingTitleFontSize(text) {
+  const length = String(text || "").replace(/\s+/g, "").length;
+  return length > 42 ? 36 : length > 30 ? 41 : length > 20 ? 47 : 54;
+}
+
+function talkingExcerptFontSize(text) {
+  const length = String(text || "").replace(/\s+/g, "").length;
+  return length > 80 ? 16 : length > 52 ? 18 : length > 30 ? 21 : 26;
+}
+
 function CoverCanvas({ fields, mode, template, background, overlay, accent, align, textScale, textPosition, account, interactive, onPointerDown, onPointerMove, onPointerUp }) {
   const coverTitle = fields.coverTitle || "请输入封面主标题";
   const excerpt = fields.excerpt || "添加一段摘要，让读者快速知道这篇笔记会讲什么。";
@@ -71,12 +82,20 @@ function CoverCanvas({ fields, mode, template, background, overlay, accent, alig
     <div className="xhs-canvas-overlay" style={{ background: `rgba(0,0,0,${overlay / 100})` }} />
     <div className="xhs-decor-grid" />
     <div className="xhs-decor-shape one" style={{ backgroundColor: accent }} /><div className="xhs-decor-shape two" />
-    <div className={`xhs-copy-block align-${align} ${interactive ? "interactive" : ""}`} style={{ transform }} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
+    {template === "talking-head" ? <div className={`xhs-copy-block xhs-talking-copy align-${align} ${interactive ? "interactive" : ""}`} style={{ transform }} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
+      <div className="xhs-talking-stickers">
+        <span className="white">{fields.category || "今日话题"}</span>
+        <span className="yellow">{fields.coverSubtitle || "一句话说透这件事"}</span>
+      </div>
+      <h2 className="xhs-talking-title" style={{ fontSize: `${talkingTitleFontSize(coverTitle)}px` }}>{coverTitle}</h2>
+      <p className="xhs-talking-highlight" style={{ fontSize: `${talkingExcerptFontSize(excerpt)}px` }}>{excerpt}</p>
+      <footer className="xhs-talking-author"><img src={account.avatarUrl} alt="" /><strong>{account.displayName || "未命名"}</strong><span>{account.handle}</span></footer>
+    </div> : <div className={`xhs-copy-block align-${align} ${interactive ? "interactive" : ""}`} style={{ transform }} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
       <div className="xhs-cover-kicker"><span style={{ backgroundColor: accent }}>{fields.category || "未分类"}</span><b>{mode === "title" ? "COVER STORY" : "NOTE 01"}</b></div>
       <h2 style={{ fontSize: `${titleFontSize(coverTitle, mode)}px` }}>{coverTitle}</h2>
       {mode === "title" ? <p className="xhs-cover-subtitle">{fields.coverSubtitle || "添加一句副标题，让读者知道能获得什么"}</p> : <div className="xhs-cover-excerpt" style={{ fontSize: `${excerptFontSize(excerpt)}px` }}>{template === "numbered" && <strong>01</strong>}<p>{excerpt}</p></div>}
       <footer className="xhs-cover-author"><img src={account.avatarUrl} alt="" /><div><strong>{account.displayName || "未命名"}</strong><span>{account.handle}</span></div><em>ZIS / XHS COVER</em></footer>
-    </div>
+    </div>}
   </article>;
 }
 
@@ -125,6 +144,7 @@ export function XiaohongshuApp() {
   }, [backgroundQuery, backgrounds]);
   const titleTooLong = fields.coverTitle.replace(/\s+/g, "").length > 52;
   const excerptTooLong = fields.excerpt.replace(/\s+/g, "").length > 280;
+  const talkingExcerptTooLong = template === "talking-head" && fields.excerpt.replace(/\s+/g, "").length > 80;
 
   useEffect(() => {
     const previousTitle = document.title;
@@ -186,6 +206,7 @@ export function XiaohongshuApp() {
     if (randomBackground) setBackground((current) => pickDifferentBackground(backgrounds, current));
   }
   function chooseCoverMode(nextMode) { setCoverMode(nextMode); setTemplate(nextMode === "title" ? "editorial" : "paper-note"); resetPlacement(); }
+  function chooseTemplate(nextTemplate) { setTemplate(nextTemplate); if (nextTemplate === "talking-head") { setAlign("center"); setOverlay(8); } }
   function switchAccount(item) { setActiveAccountId(item.id); window.localStorage.setItem("zis-xhs-active-account", item.id); setManagerOpen(false); if (randomBackground) setBackground((current) => pickDifferentBackground(backgrounds, current)); }
   function setRandomEnabled(enabled) { setRandomBackground(enabled); window.localStorage.setItem("zis-xhs-random-background", String(enabled)); if (enabled) setBackground((current) => pickDifferentBackground(backgrounds, current)); }
   function loadBackground(event) { const file = event.target.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => setBackground(String(reader.result)); reader.readAsDataURL(file); }
@@ -240,9 +261,9 @@ export function XiaohongshuApp() {
           <label className="xhs-field"><span>主标题 <em>{fields.coverTitle.length} 字</em></span><textarea value={fields.coverTitle} onChange={(event) => updateField("coverTitle", event.target.value)} rows="3" /></label>
           <label className="xhs-field"><span>副标题</span><textarea value={fields.coverSubtitle} onChange={(event) => updateField("coverSubtitle", event.target.value)} rows="2" /></label>
           <label className="xhs-field"><span>摘要卡片文字 <em>{fields.excerpt.length} 字</em></span><textarea value={fields.excerpt} onChange={(event) => updateField("excerpt", event.target.value)} rows="4" /></label>
-          {(titleTooLong || excerptTooLong) && <div className="xhs-length-warning"><WarningCircle weight="fill" /><span>{titleTooLong ? "主标题偏长，系统已缩小字号；精简到 52 字以内会更醒目。" : "摘要偏长，系统已缩小字号；建议保留最核心的一段。"}</span></div>}
+          {(titleTooLong || excerptTooLong || talkingExcerptTooLong) && <div className="xhs-length-warning"><WarningCircle weight="fill" /><span>{titleTooLong ? "主标题偏长，系统已缩小字号；精简到 52 字以内会更醒目。" : talkingExcerptTooLong ? "高亮口播的粉色强调句偏长，系统已缩小字号；精简到 80 字以内更接近参考效果。" : "摘要偏长，系统已缩小字号；建议保留最核心的一段。"}</span></div>}
         </section>
-        <section><div className="xhs-heading"><b>03</b><div><h2>选择封面样式</h2><p>两种内容结构，各有三套稳定模板</p></div></div><div className="xhs-template-tabs"><button className={coverMode === "title" ? "active" : ""} onClick={() => chooseCoverMode("title")}><TextT weight="bold" />大标题海报</button><button className={coverMode === "summary" ? "active" : ""} onClick={() => chooseCoverMode("summary")}><ImageSquare weight="bold" />摘要卡片</button></div><div className="xhs-template-list">{templates.map((item) => <button key={item.id} className={template === item.id ? "active" : ""} onClick={() => setTemplate(item.id)}><i className={item.id} /><strong>{item.name}</strong><small>{item.description}</small></button>)}</div></section>
+        <section><div className="xhs-heading"><b>03</b><div><h2>选择封面样式</h2><p>大标题 4 套，摘要卡片 3 套</p></div></div><div className="xhs-template-tabs"><button className={coverMode === "title" ? "active" : ""} onClick={() => chooseCoverMode("title")}><TextT weight="bold" />大标题海报</button><button className={coverMode === "summary" ? "active" : ""} onClick={() => chooseCoverMode("summary")}><ImageSquare weight="bold" />摘要卡片</button></div><div className="xhs-template-list">{templates.map((item) => <button key={item.id} className={template === item.id ? "active" : ""} onClick={() => chooseTemplate(item.id)}><i className={item.id} /><strong>{item.name}</strong><small>{item.description}</small></button>)}</div></section>
         <section><div className="xhs-background-heading"><div className="xhs-heading"><b>04</b><div><h2>选择背景</h2><p>共享图库、本地图片和网络地址都能用</p></div></div><button onClick={() => setBackgroundManagerOpen(true)}><PencilSimple />管理背景</button></div>
           <label className="xhs-random-toggle"><input type="checkbox" checked={randomBackground} onChange={(event) => setRandomEnabled(event.target.checked)} /><span><strong>随机背景</strong><small>更换内容或账号时自动换图</small></span></label>
           <label className="xhs-search"><MagnifyingGlass /><input value={backgroundQuery} onChange={(event) => setBackgroundQuery(event.target.value)} placeholder="搜索：城市、纸张、蓝天" /></label>
