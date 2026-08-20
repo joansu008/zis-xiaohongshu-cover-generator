@@ -19,12 +19,11 @@ export function XhsLayerEditor({
   onSelectSubject, onLocalSubject, onOpenSubjectManager, subjectNotice,
 }) {
   const layer = layers.find((item) => item.id === selectedLayerId) || layers[0];
-  if (!layer) return null;
+  if (!layer) return <div className="xhs-layer-editor xhs-layer-editor-empty"><strong>当前模板没有可编辑元素</strong><span>可以恢复模板默认元素后继续编辑。</span><button onClick={onResetTemplate}>恢复整套模板</button></div>;
   const isText = layer.type === "text";
   const isAuthor = layer.type === "author";
   const isImage = ["subject", "photo", "custom-image"].includes(layer.type);
   const isDecor = layer.type === "decor";
-  const canDelete = layer.id.startsWith("custom-");
   return <div className="xhs-layer-editor xhs-layer-editor-generic">
     <div className="xhs-layer-heading"><span>正在编辑：<b>{layer.name}</b></span><button onClick={onResetTemplate}>整套重置</button></div>
     <div className="xhs-layer-tabs">{layers.map((item) => <button key={item.id} className={`${selectedLayerId === item.id ? "active" : ""} ${!item.visible ? "muted" : ""}`} onClick={() => onSelectLayer(item.id)}>{item.name}</button>)}</div>
@@ -36,7 +35,7 @@ export function XhsLayerEditor({
       {subjectNotice && <p className="xhs-subject-notice">{subjectNotice}</p>}
     </div>}
 
-    <div className="xhs-layer-actions"><button onClick={() => onUpdateLayer("visible", !layer.visible)}>{layer.visible ? <Eye /> : <EyeSlash />}{layer.visible ? "隐藏" : "显示"}</button><button onClick={() => onMoveLayer(-1)}><ArrowDown />后移</button><button onClick={() => onMoveLayer(1)}><ArrowUp />前移</button>{canDelete && <button className="danger" onClick={onRemoveLayer}><Trash />删除</button>}</div>
+    <div className="xhs-layer-actions"><button onClick={() => onUpdateLayer("visible", !layer.visible)}>{layer.visible ? <Eye /> : <EyeSlash />}{layer.visible ? "隐藏" : "显示"}</button><button onClick={() => onMoveLayer(-1)}><ArrowDown />后移</button><button onClick={() => onMoveLayer(1)}><ArrowUp />前移</button><button className="danger" onClick={onRemoveLayer}><Trash />删除元素</button></div>
 
     <div className="xhs-control-subhead">位置与尺寸</div>
     <Range label="水平位置" value={layer.x} min={0} max={540} onChange={(value) => onUpdateLayer("x", value)} />
