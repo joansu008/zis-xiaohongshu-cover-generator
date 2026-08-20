@@ -11,6 +11,9 @@ export default {
       if (requestUrl.pathname === "/api/xiaohongshu/content" && request.method === "GET") {
         return listXiaohongshuContent(requestUrl, env);
       }
+      if (requestUrl.pathname === "/api/xiaohongshu/assets" && request.method === "GET") {
+        return listXiaohongshuAssets(requestUrl, env);
+      }
       if (requestUrl.pathname === "/api/backgrounds" && request.method === "GET") {
         return listBackgrounds(env);
       }
@@ -19,6 +22,9 @@ export default {
       }
       if (requestUrl.pathname.startsWith("/api/background/") && request.method === "GET") {
         return serveBackground(requestUrl, env);
+      }
+      if (requestUrl.pathname.startsWith("/api/xiaohongshu/asset/") && request.method === "GET") {
+        return serveXiaohongshuAsset(requestUrl, env);
       }
       if (requestUrl.pathname.startsWith("/api/admin/")) {
         return handleAdminRequest(request, requestUrl, env);
@@ -107,6 +113,7 @@ const LOCK_SECONDS = 15 * 60;
 const MAX_LOGIN_FAILURES = 5;
 const AVATAR_MAX_BYTES = 5 * 1024 * 1024;
 const BACKGROUND_MAX_BYTES = 10 * 1024 * 1024;
+const SUBJECT_MAX_BYTES = 8 * 1024 * 1024;
 
 async function listAccounts(env) {
   requireDb(env);
@@ -161,6 +168,22 @@ async function listXiaohongshuContent(url, env) {
   return apiJson({ content: (result.results || []).map(mapXiaohongshuContentRow) });
 }
 
+async function listXiaohongshuAssets(url, env) {
+  requireDb(env);
+  const accountId = url.searchParams.get("accountId") || "";
+  const kind = url.searchParams.get("kind") || "subject";
+  if (!accountId) return apiError("请选择账号。", 400);
+  if (kind !== "subject") return apiError("素材类型无效。", 400);
+  const account = await env.DB.prepare("SELECT id FROM accounts WHERE id = ?").bind(accountId).first();
+  if (!account) return apiError("账号不存在。", 404);
+  const result = await env.DB.prepare(`
+    SELECT id, account_id, kind, name, image_url, display_order, created_at, updated_at
+    FROM xiaohongshu_assets WHERE account_id = ? AND kind = ?
+    ORDER BY display_order ASC, created_at ASC, id ASC
+  `).bind(accountId, kind).all();
+  return apiJson({ assets: (result.results || []).map(mapXiaohongshuAssetRow) });
+}
+
 async function listBackgrounds(env) {
   requireDb(env);
   const result = await env.DB.prepare(`
@@ -197,6 +220,18 @@ async function serveBackground(url, env) {
   return new Response(object.body, { headers });
 }
 
+async function serveXiaohongshuAsset(url, env) {
+  if (!env.AVATARS) return apiError("人物素材存储暂不可用。", 503);
+  const key = decodeURIComponent(url.pathname.slice("/api/xiaohongshu/asset/".length));
+  if (!key || key.includes("..") || !key.startsWith("xiaohongshu/subjects/")) return apiError("人物素材地址无效。", 400);
+  const object = await env.AVATARS.get(key);
+  if (!object) return new Response("Not found", { status: 404 });
+  const headers = new Headers(); object.writeHttpMetadata?.(headers);
+  headers.set("Cache-Control", "public, max-age=31536000, immutable");
+  headers.set("ETag", object.httpEtag || object.etag || key);
+  return new Response(object.body, { headers });
+}
+
 async function handleAdminRequest(request, url, env) {
   requireDb(env);
   if (url.pathname === "/api/admin/login" && request.method === "POST") return adminLogin(request, env);
@@ -218,6 +253,9 @@ async function handleAdminRequest(request, url, env) {
   if (url.pathname === "/api/admin/xiaohongshu/content/import" && request.method === "POST") return importXiaohongshuContent(request, env);
   if (url.pathname.startsWith("/api/admin/xiaohongshu/content/") && request.method === "PUT") return updateXiaohongshuContent(request, url, env);
   if (url.pathname.startsWith("/api/admin/xiaohongshu/content/") && request.method === "DELETE") return deleteXiaohongshuContent(url, env);
+  if (url.pathname === "/api/admin/xiaohongshu/assets" && request.method === "POST") return createXiaohongshuAsset(request, env);
+  if (url.pathname.startsWith("/api/admin/xiaohongshu/assets/") && request.method === "PUT") return updateXiaohongshuAsset(request, url, env);
+  if (url.pathname.startsWith("/api/admin/xiaohongshu/assets/") && request.method === "DELETE") return deleteXiaohongshuAsset(url, env);
   if (url.pathname === "/api/admin/avatar" && request.method === "POST") return uploadAvatar(request, env);
   if (url.pathname === "/api/admin/backgrounds" && request.method === "POST") return createBackground(request, env);
   if (url.pathname.startsWith("/api/admin/backgrounds/") && request.method === "DELETE") return deleteBackground(url, env);
@@ -289,13 +327,18 @@ async function deleteAccount(url, env) {
   if (!account) return apiError("账号不存在。", 404);
   const exclusive = await env.DB.prepare("SELECT COUNT(*) AS count FROM contents WHERE owner_account_id = ?").bind(id).first();
   const xhsExclusive = await env.DB.prepare("SELECT COUNT(*) AS count FROM xiaohongshu_contents WHERE owner_account_id = ?").bind(id).first();
+  const assetResult = await env.DB.prepare("SELECT storage_key FROM xiaohongshu_assets WHERE account_id = ?").bind(id).all();
   await env.DB.batch([
     env.DB.prepare("DELETE FROM contents WHERE owner_account_id = ?").bind(id),
     env.DB.prepare("DELETE FROM xiaohongshu_contents WHERE owner_account_id = ?").bind(id),
+    env.DB.prepare("DELETE FROM xiaohongshu_assets WHERE account_id = ?").bind(id),
     env.DB.prepare("DELETE FROM accounts WHERE id = ?").bind(id),
   ]);
   await removeManagedAvatar(account.avatar_url, env);
-  return apiJson({ deleted: true, deletedContentCount: Number(exclusive?.count || 0), deletedXiaohongshuContentCount: Number(xhsExclusive?.count || 0) });
+  for (const asset of assetResult.results || []) {
+    if (asset.storage_key && env.AVATARS) try { await env.AVATARS.delete(asset.storage_key); } catch { /* database cleanup already succeeded */ }
+  }
+  return apiJson({ deleted: true, deletedContentCount: Number(exclusive?.count || 0), deletedXiaohongshuContentCount: Number(xhsExclusive?.count || 0), deletedXiaohongshuAssetCount: assetResult.results?.length || 0 });
 }
 
 async function createContent(request, env) {
@@ -395,6 +438,65 @@ function insertXiaohongshuStatement(env, id, values, now) {
   `).bind(id, values.ownerAccountId, values.category, values.coverTitle, values.coverSubtitle, values.excerpt,
     values.noteTitle, values.noteBody, JSON.stringify(values.keywords), values.sourceName, values.sourceUrl,
     values.requiresVerification ? 1 : 0, values.verificationNote, values.priority, now, now);
+}
+
+async function createXiaohongshuAsset(request, env) {
+  if (!env.AVATARS) return apiError("人物素材存储暂不可用。", 503);
+  const length = Number(request.headers.get("content-length") || 0);
+  if (length > SUBJECT_MAX_BYTES + 300000) return apiError("人物图片不能超过8MB。", 413);
+  const form = await request.formData();
+  const file = form.get("image");
+  const name = String(form.get("name") || "").trim().slice(0, 40);
+  const accountId = String(form.get("accountId") || "").trim();
+  const kind = String(form.get("kind") || "subject");
+  if (!name) return apiError("请填写人物素材名称。", 400);
+  if (!accountId) return apiError("请选择素材所属账号。", 400);
+  if (kind !== "subject") return apiError("人物素材类型无效。", 400);
+  const account = await env.DB.prepare("SELECT id FROM accounts WHERE id = ?").bind(accountId).first();
+  if (!account) return apiError("指定账号不存在。", 400);
+  if (!file || typeof file.arrayBuffer !== "function") return apiError("请选择人物图片。", 400);
+  if (file.size > SUBJECT_MAX_BYTES) return apiError("人物图片不能超过8MB。", 413);
+  const extensions = { "image/png": "png", "image/webp": "webp" };
+  const extension = extensions[file.type];
+  if (!extension) return apiError("人物图片仅支持 PNG 或 WebP。", 400);
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (!hasImageSignature(bytes, file.type)) return apiError("图片内容与文件格式不符。", 400);
+  const id = `xhs-asset-${crypto.randomUUID()}`;
+  const storageKey = `xiaohongshu/subjects/${accountId}/${crypto.randomUUID()}.${extension}`;
+  const imageUrl = `/api/xiaohongshu/asset/${encodeURIComponent(storageKey)}`;
+  const createdAt = new Date().toISOString();
+  const orderRow = await env.DB.prepare("SELECT COALESCE(MAX(display_order), 0) AS max_order FROM xiaohongshu_assets WHERE account_id = ? AND kind = ?").bind(accountId, kind).first();
+  await env.AVATARS.put(storageKey, bytes, { httpMetadata: { contentType: file.type } });
+  try {
+    await env.DB.prepare("INSERT INTO xiaohongshu_assets (id, account_id, kind, name, image_url, storage_key, display_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .bind(id, accountId, kind, name, imageUrl, storageKey, Number(orderRow?.max_order || 0) + 1, createdAt, createdAt).run();
+  } catch (error) {
+    try { await env.AVATARS.delete(storageKey); } catch { /* best-effort cleanup */ }
+    throw error;
+  }
+  return apiJson({ asset: { id, accountId, kind, name, src: imageUrl, displayOrder: Number(orderRow?.max_order || 0) + 1, createdAt } }, 201);
+}
+
+async function updateXiaohongshuAsset(request, url, env) {
+  const id = pathId(url, "/api/admin/xiaohongshu/assets/");
+  const asset = await env.DB.prepare("SELECT id FROM xiaohongshu_assets WHERE id = ?").bind(id).first();
+  if (!asset) return apiError("人物素材不存在。", 404);
+  const payload = await readJson(request);
+  const name = String(payload.name || "").trim().slice(0, 40);
+  const displayOrder = Math.max(0, Math.min(10000, Math.round(Number(payload.displayOrder || 0))));
+  if (!name) return apiError("请填写人物素材名称。", 400);
+  await env.DB.prepare("UPDATE xiaohongshu_assets SET name = ?, display_order = ?, updated_at = ? WHERE id = ?")
+    .bind(name, displayOrder, new Date().toISOString(), id).run();
+  return apiJson({ asset: { id, name, displayOrder } });
+}
+
+async function deleteXiaohongshuAsset(url, env) {
+  const id = pathId(url, "/api/admin/xiaohongshu/assets/");
+  const asset = await env.DB.prepare("SELECT id, storage_key FROM xiaohongshu_assets WHERE id = ?").bind(id).first();
+  if (!asset) return apiError("人物素材不存在。", 404);
+  await env.DB.prepare("DELETE FROM xiaohongshu_assets WHERE id = ?").bind(id).run();
+  if (asset.storage_key && env.AVATARS) try { await env.AVATARS.delete(asset.storage_key); } catch { /* database deletion already succeeded */ }
+  return apiJson({ deleted: true, id });
 }
 
 async function uploadAvatar(request, env) {
@@ -590,6 +692,25 @@ function mapBackgroundRow(row) {
     displayOrder: Number(row.display_order || 0),
     createdAt: row.created_at,
   };
+}
+
+function mapXiaohongshuAssetRow(row) {
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    kind: row.kind,
+    name: row.name,
+    src: row.image_url,
+    displayOrder: Number(row.display_order || 0),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function hasImageSignature(bytes, type) {
+  if (type === "image/png") return bytes.length >= 8 && [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a].every((value, index) => bytes[index] === value);
+  if (type === "image/webp") return bytes.length >= 12 && String.fromCharCode(...bytes.slice(0, 4)) === "RIFF" && String.fromCharCode(...bytes.slice(8, 12)) === "WEBP";
+  return false;
 }
 
 async function hasAdminSession(request, env) {

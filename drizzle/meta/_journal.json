@@ -29,6 +29,13 @@
       "when": 1787170351032,
       "tag": "0003_black_iron_patriot",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1787210277050,
+      "tag": "0004_mature_iron_monger",
+      "breakpoints": true
     }
   ]
 }

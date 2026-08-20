@@ -11,7 +11,7 @@ async function apiRequest(url, options = {}) {
   return body;
 }
 
-export function XiaohongshuManagerModal({ open, accounts, activeAccount, content, onClose, onSelect, onContentChanged }) {
+export function XiaohongshuManagerModal({ open, accounts, activeAccount, content, assets = [], initialTab = "accounts", onClose, onSelect, onContentChanged, onAssetsChanged }) {
   const [adminUnlocked, setAdminUnlocked] = useState(false);
   const [showLogin, setShowLogin] = useState(false);
   const [password, setPassword] = useState("");
@@ -24,17 +24,28 @@ export function XiaohongshuManagerModal({ open, accounts, activeAccount, content
   const [importErrors, setImportErrors] = useState([]);
   const [importFileName, setImportFileName] = useState("");
   const [importOwner, setImportOwner] = useState("");
+  const [assetFile, setAssetFile] = useState(null);
+  const [assetName, setAssetName] = useState("");
+  const [assetAccountId, setAssetAccountId] = useState("");
+  const [assetNotice, setAssetNotice] = useState("");
+  const [editingAsset, setEditingAsset] = useState(null);
 
   useEffect(() => {
     if (!open) return;
     setError("");
-    apiRequest("/api/admin/session").then((result) => setAdminUnlocked(Boolean(result.authenticated))).catch(() => setAdminUnlocked(false));
-  }, [open]);
+    apiRequest("/api/admin/session").then((result) => {
+      const unlocked = Boolean(result.authenticated);
+      setAdminUnlocked(unlocked); setTab(unlocked ? initialTab : "accounts");
+      if (!unlocked && initialTab === "subjects") setShowLogin(true);
+    }).catch(() => { setAdminUnlocked(false); setTab("accounts"); });
+    setAssetAccountId(activeAccount?.id || accounts[0]?.id || "");
+  }, [open, initialTab, activeAccount?.id]);
 
   useEffect(() => {
     if (open) return;
     setShowLogin(false); setPassword(""); setTab("accounts"); setContentForm(null); setError("");
     setImportRows([]); setImportErrors([]); setImportFileName("");
+    setAssetFile(null); setAssetName(""); setAssetNotice(""); setEditingAsset(null);
   }, [open]);
 
   const visibleContent = useMemo(() => {
@@ -48,7 +59,7 @@ export function XiaohongshuManagerModal({ open, accounts, activeAccount, content
     event.preventDefault(); setBusy(true); setError("");
     try {
       await apiRequest("/api/admin/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }) });
-      setAdminUnlocked(true); setShowLogin(false); setPassword("");
+      setAdminUnlocked(true); setShowLogin(false); setPassword(""); setTab(initialTab === "subjects" ? "subjects" : "accounts");
     } catch (loginError) { setError(loginError.message); }
     finally { setBusy(false); }
   }
@@ -122,10 +133,58 @@ export function XiaohongshuManagerModal({ open, accounts, activeAccount, content
     finally { setBusy(false); }
   }
 
+  async function inspectAssetFile(file) {
+    setAssetFile(file || null); setAssetNotice("");
+    if (!file) return;
+    if (!["image/png", "image/webp"].includes(file.type)) { setAssetFile(null); setAssetNotice("人物图片仅支持 PNG 或 WebP。"); return; }
+    if (file.size > 8 * 1024 * 1024) { setAssetFile(null); setAssetNotice("人物图片单张不能超过 8MB。"); return; }
+    const source = URL.createObjectURL(file); const image = new Image();
+    image.onload = () => {
+      const canvas = document.createElement("canvas"); canvas.width = 80; canvas.height = 80;
+      const context = canvas.getContext("2d", { willReadFrequently: true }); context.drawImage(image, 0, 0, 80, 80);
+      const data = context.getImageData(0, 0, 80, 80).data; let transparent = false;
+      for (let index = 3; index < data.length; index += 4) if (data[index] < 250) { transparent = true; break; }
+      setAssetNotice(transparent ? "检测到透明区域，适合人物白描边。" : "未检测到透明区域；可以继续上传，但人物白描边会形成矩形。");
+      URL.revokeObjectURL(source);
+    };
+    image.onerror = () => { setAssetFile(null); setAssetNotice("无法读取这张图片。"); URL.revokeObjectURL(source); };
+    image.src = source;
+  }
+
+  async function uploadAsset(event) {
+    event.preventDefault();
+    if (!assetFile || !assetName.trim() || !assetAccountId) return;
+    setBusy(true); setError("");
+    try {
+      const form = new FormData(); form.set("image", assetFile); form.set("name", assetName); form.set("accountId", assetAccountId); form.set("kind", "subject");
+      await apiRequest("/api/admin/xiaohongshu/assets", { method: "POST", body: form });
+      setAssetFile(null); setAssetName(""); setAssetNotice(""); await onAssetsChanged?.();
+    } catch (uploadError) { setError(uploadError.message); }
+    finally { setBusy(false); }
+  }
+
+  async function saveAsset(event) {
+    event.preventDefault(); if (!editingAsset) return;
+    setBusy(true); setError("");
+    try {
+      await apiRequest(`/api/admin/xiaohongshu/assets/${encodeURIComponent(editingAsset.id)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: editingAsset.name, displayOrder: editingAsset.displayOrder }) });
+      setEditingAsset(null); await onAssetsChanged?.();
+    } catch (saveError) { setError(saveError.message); }
+    finally { setBusy(false); }
+  }
+
+  async function removeAsset(asset) {
+    if (!window.confirm(`确定删除人物素材“${asset.name}”吗？云端文件也会同步删除。`)) return;
+    setBusy(true); setError("");
+    try { await apiRequest(`/api/admin/xiaohongshu/assets/${encodeURIComponent(asset.id)}`, { method: "DELETE" }); await onAssetsChanged?.(); }
+    catch (deleteError) { setError(deleteError.message); }
+    finally { setBusy(false); }
+  }
+
   return <div className="account-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="account-modal xhs-manager-modal" role="dialog" aria-modal="true" aria-label="小红书账号与素材管理">
       <header className="account-modal-header"><div><span className="account-modal-kicker">XHS LIBRARY</span><h2>{adminUnlocked ? "小红书账号与素材管理" : "选择发布账号"}</h2></div><button className="modal-close" onClick={onClose} aria-label="关闭"><X weight="bold" /></button></header>
-      {adminUnlocked && <div className="account-modal-tabs"><button className={tab === "accounts" ? "active" : ""} onClick={() => setTab("accounts")}>账号切换</button><button className={tab === "content" ? "active" : ""} onClick={() => { setTab("content"); setContentForm(null); }}>素材管理</button><button className={tab === "import" ? "active" : ""} onClick={() => setTab("import")}>表格导入</button></div>}
+      {adminUnlocked && <div className="account-modal-tabs"><button className={tab === "accounts" ? "active" : ""} onClick={() => setTab("accounts")}>账号切换</button><button className={tab === "content" ? "active" : ""} onClick={() => { setTab("content"); setContentForm(null); }}>内容素材</button><button className={tab === "subjects" ? "active" : ""} onClick={() => setTab("subjects")}>人物库</button><button className={tab === "import" ? "active" : ""} onClick={() => setTab("import")}>表格导入</button></div>}
       {error && <div className="modal-error">{error}</div>}
 
       {tab === "accounts" && <div className="account-modal-body">
@@ -153,6 +212,20 @@ export function XiaohongshuManagerModal({ open, accounts, activeAccount, content
           <label><span>核验提示</span><input value={contentForm.verificationNote} onChange={(event) => setContentForm({ ...contentForm, verificationNote: event.target.value })} placeholder="有数据、收益或事实判断时填写" /></label>
           <div className="modal-form-actions"><button type="button" onClick={() => setContentForm(null)}>取消</button><button className="primary" disabled={busy}>{busy ? "正在保存…" : "保存素材"}</button></div>
         </form>}
+      </div>}
+
+      {adminUnlocked && tab === "subjects" && <div className="account-modal-body xhs-asset-manager">
+        <div className="xhs-import-intro"><FileArrowUp weight="fill" /><div><h3>账号人物素材库</h3><p>透明 PNG / WebP，单张不超过 8MB；每个账号独立保存。</p></div></div>
+        <form className="xhs-asset-upload" onSubmit={uploadAsset}>
+          <div className="content-form-row"><label><span>所属账号</span><select value={assetAccountId} onChange={(event) => setAssetAccountId(event.target.value)}>{accounts.map((item) => <option key={item.id} value={item.id}>{item.displayName}</option>)}</select></label><label><span>素材名称</span><input value={assetName} maxLength="40" onChange={(event) => setAssetName(event.target.value)} placeholder="例如：安妮正面半身" required /></label></div>
+          <label className="xhs-import-picker"><FileArrowUp /><strong>{assetFile?.name || "选择透明人物 PNG / WebP"}</strong><span>上传前会检查透明区域；没有透明背景也允许继续</span><input type="file" accept="image/png,image/webp" onChange={(event) => inspectAssetFile(event.target.files?.[0])} /></label>
+          {assetNotice && <p className="xhs-asset-notice">{assetNotice}</p>}
+          <button className="xhs-import-confirm" disabled={busy || !assetFile || !assetName.trim() || !assetAccountId}>{busy ? "正在上传…" : "上传到人物库"}</button>
+        </form>
+        <p className="content-manager-note">当前显示“{activeAccount?.displayName}”的专属人物素材。</p>
+        {!assets.length && <div className="xhs-manager-empty"><NotePencil /><strong>人物库还是空的</strong><span>也可以在编辑器里临时上传，临时素材不会写入云端。</span></div>}
+        <div className="xhs-managed-assets">{assets.map((asset) => <article key={asset.id}><img src={asset.src} alt={asset.name} /><div><strong>{asset.name}</strong><small>排序 {asset.displayOrder}</small></div><div><button onClick={() => setEditingAsset({ ...asset })} aria-label="编辑人物素材"><NotePencil /></button><button className="danger" onClick={() => removeAsset(asset)} aria-label="删除人物素材"><Trash /></button></div></article>)}</div>
+        {editingAsset && <form className="modal-form xhs-asset-edit" onSubmit={saveAsset}><h3>编辑人物素材</h3><label><span>素材名称</span><input value={editingAsset.name} maxLength="40" onChange={(event) => setEditingAsset({ ...editingAsset, name: event.target.value })} required /></label><label><span>排序</span><input type="number" min="0" max="10000" value={editingAsset.displayOrder} onChange={(event) => setEditingAsset({ ...editingAsset, displayOrder: Number(event.target.value) })} /></label><div className="modal-form-actions"><button type="button" onClick={() => setEditingAsset(null)}>取消</button><button className="primary" disabled={busy}>保存</button></div></form>}
       </div>}
 
       {adminUnlocked && tab === "import" && <div className="account-modal-body xhs-import-panel">

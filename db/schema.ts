@@ -50,6 +50,18 @@ export const xiaohongshuContents = sqliteTable("xiaohongshu_contents", {
   updatedAt: text("updated_at").notNull(),
 }, (table) => [index("idx_xiaohongshu_contents_owner_account_id").on(table.ownerAccountId)]);
 
+export const xiaohongshuAssets = sqliteTable("xiaohongshu_assets", {
+  id: text("id").primaryKey(),
+  accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull().default("subject"),
+  name: text("name").notNull(),
+  imageUrl: text("image_url").notNull(),
+  storageKey: text("storage_key").notNull(),
+  displayOrder: integer("display_order").notNull().default(0),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [index("idx_xiaohongshu_assets_account_kind_order").on(table.accountId, table.kind, table.displayOrder)]);
+
 export const adminLoginAttempts = sqliteTable("admin_login_attempts", {
   clientKey: text("client_key").primaryKey(),
   failures: integer("failures").notNull().default(0),
