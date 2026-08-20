@@ -36,6 +36,30 @@ const summaryTemplates = [
   { id: "numbered", name: "编号清单", description: "清晰 / 干货感" },
 ];
 
+const talkingLayerMeta = [
+  { id: "category", name: "白色栏目" },
+  { id: "subtitle", name: "黄色副标题" },
+  { id: "title", name: "绿描边主标题" },
+  { id: "highlight", name: "粉色强调句" },
+  { id: "author", name: "账号署名" },
+];
+const talkingFonts = {
+  bold: { name: "黑体", css: 'Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif' },
+  rounded: { name: "圆体", css: '"Arial Rounded MT Bold", "PingFang SC", system-ui, sans-serif' },
+  song: { name: "宋体", css: '"Songti SC", "STSong", serif' },
+  kai: { name: "楷体", css: '"Kaiti SC", "STKaiti", serif' },
+};
+const defaultTalkingLayers = {
+  category: { x: 270, y: 72, width: 250, fontSize: 27, scale: 1, align: "center", font: "bold" },
+  subtitle: { x: 270, y: 130, width: 430, fontSize: 27, scale: 1, align: "center", font: "bold" },
+  title: { x: 270, y: 505, width: 470, fontSize: 47, scale: 1, align: "center", font: "bold" },
+  highlight: { x: 270, y: 603, width: 455, fontSize: 21, scale: 1, align: "center", font: "bold" },
+  author: { x: 430, y: 680, width: 120, fontSize: 10, scale: 1, align: "left", font: "bold" },
+};
+function createDefaultTalkingLayers() {
+  return Object.fromEntries(Object.entries(defaultTalkingLayers).map(([id, layer]) => [id, { ...layer }]));
+}
+
 const initialFields = {
   category: "个人成长",
   coverTitle: "真正的成长，是把选择权拿回自己手里",
@@ -63,17 +87,7 @@ function excerptFontSize(text) {
   return length > 280 ? 15 : length > 210 ? 17 : length > 140 ? 19 : 21;
 }
 
-function talkingTitleFontSize(text) {
-  const length = String(text || "").replace(/\s+/g, "").length;
-  return length > 42 ? 36 : length > 30 ? 41 : length > 20 ? 47 : 54;
-}
-
-function talkingExcerptFontSize(text) {
-  const length = String(text || "").replace(/\s+/g, "").length;
-  return length > 80 ? 16 : length > 52 ? 18 : length > 30 ? 21 : 26;
-}
-
-function CoverCanvas({ fields, mode, template, background, overlay, accent, align, textScale, textPosition, account, interactive, onPointerDown, onPointerMove, onPointerUp }) {
+function CoverCanvas({ fields, mode, template, background, overlay, accent, align, textScale, textPosition, talkingLayers, selectedTalkingLayer, account, interactive, onPointerDown, onPointerMove, onPointerUp, onTalkingPointerDown, onTalkingPointerMove, onTalkingPointerUp }) {
   const coverTitle = fields.coverTitle || "请输入封面主标题";
   const excerpt = fields.excerpt || "添加一段摘要，让读者快速知道这篇笔记会讲什么。";
   const transform = `translate(calc(-50% + ${textPosition.x}px), calc(-50% + ${textPosition.y}px)) scale(${textScale})`;
@@ -82,14 +96,17 @@ function CoverCanvas({ fields, mode, template, background, overlay, accent, alig
     <div className="xhs-canvas-overlay" style={{ background: `rgba(0,0,0,${overlay / 100})` }} />
     <div className="xhs-decor-grid" />
     <div className="xhs-decor-shape one" style={{ backgroundColor: accent }} /><div className="xhs-decor-shape two" />
-    {template === "talking-head" ? <div className={`xhs-copy-block xhs-talking-copy align-${align} ${interactive ? "interactive" : ""}`} style={{ transform }} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
-      <div className="xhs-talking-stickers">
-        <span className="white">{fields.category || "今日话题"}</span>
-        <span className="yellow">{fields.coverSubtitle || "一句话说透这件事"}</span>
-      </div>
-      <h2 className="xhs-talking-title" style={{ fontSize: `${talkingTitleFontSize(coverTitle)}px` }}>{coverTitle}</h2>
-      <p className="xhs-talking-highlight" style={{ fontSize: `${talkingExcerptFontSize(excerpt)}px` }}>{excerpt}</p>
-      <footer className="xhs-talking-author"><img src={account.avatarUrl} alt="" /><strong>{account.displayName || "未命名"}</strong><span>{account.handle}</span></footer>
+    {template === "talking-head" ? <div className="xhs-talking-layers">
+      {talkingLayerMeta.map(({ id }) => {
+        const layer = talkingLayers[id];
+        const layerStyle = { left: `${layer.x}px`, top: `${layer.y}px`, width: `${layer.width}px`, fontSize: `${layer.fontSize}px`, fontFamily: talkingFonts[layer.font]?.css || talkingFonts.bold.css, textAlign: layer.align, transform: `translate(-50%, -50%) scale(${layer.scale})` };
+        const layerProps = { className: `xhs-talking-layer layer-${id} ${interactive ? "interactive" : ""} ${interactive && selectedTalkingLayer === id ? "selected" : ""}`, style: layerStyle, "data-layer-id": id, onPointerDown: interactive ? (event) => onTalkingPointerDown(event, id) : undefined, onPointerMove: interactive ? onTalkingPointerMove : undefined, onPointerUp: interactive ? onTalkingPointerUp : undefined, onPointerCancel: interactive ? onTalkingPointerUp : undefined };
+        if (id === "category") return <div key={id} {...layerProps}><span className="white">{fields.category || "今日话题"}</span></div>;
+        if (id === "subtitle") return <div key={id} {...layerProps}><span className="yellow">{fields.coverSubtitle || "一句话说透这件事"}</span></div>;
+        if (id === "title") return <h2 key={id} {...layerProps}>{coverTitle}</h2>;
+        if (id === "highlight") return <p key={id} {...layerProps}>{excerpt}</p>;
+        return <footer key={id} {...layerProps}><img src={account.avatarUrl} alt="" /><strong>{account.displayName || "未命名"}</strong><span>{account.handle}</span></footer>;
+      })}
     </div> : <div className={`xhs-copy-block align-${align} ${interactive ? "interactive" : ""}`} style={{ transform }} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
       <div className="xhs-cover-kicker"><span style={{ backgroundColor: accent }}>{fields.category || "未分类"}</span><b>{mode === "title" ? "COVER STORY" : "NOTE 01"}</b></div>
       <h2 style={{ fontSize: `${titleFontSize(coverTitle, mode)}px` }}>{coverTitle}</h2>
@@ -118,6 +135,8 @@ export function XiaohongshuApp() {
   const [align, setAlign] = useState("left");
   const [textScale, setTextScale] = useState(1);
   const [textPosition, setTextPosition] = useState({ x: 0, y: 0 });
+  const [talkingLayers, setTalkingLayers] = useState(createDefaultTalkingLayers);
+  const [selectedTalkingLayer, setSelectedTalkingLayer] = useState("title");
   const [randomBackground, setRandomBackground] = useState(() => typeof window === "undefined" || window.localStorage.getItem("zis-xhs-random-background") !== "false");
   const [managerOpen, setManagerOpen] = useState(false);
   const [backgroundManagerOpen, setBackgroundManagerOpen] = useState(false);
@@ -129,10 +148,13 @@ export function XiaohongshuApp() {
   const previewCanvasRef = useRef(null);
   const exportRef = useRef(null);
   const dragRef = useRef(null);
+  const talkingDragRef = useRef(null);
 
   const activeAccount = useMemo(() => accounts.find((item) => item.id === activeAccountId) || accounts[0] || fallbackAccount, [accounts, activeAccountId]);
   const templates = coverMode === "title" ? titleTemplates : summaryTemplates;
   const activeTemplate = templates.find((item) => item.id === template) || templates[0];
+  const activeTalkingLayer = talkingLayers[selectedTalkingLayer];
+  const activeTalkingLayerName = talkingLayerMeta.find((item) => item.id === selectedTalkingLayer)?.name || "组件";
   const note = useMemo(() => buildXhsNote(fields), [fields]);
   const visibleContent = useMemo(() => {
     const needle = sourceQuery.trim().toLowerCase();
@@ -163,7 +185,7 @@ export function XiaohongshuApp() {
     observer.observe(stageRef.current);
     return () => observer.disconnect();
   }, []);
-  useEffect(() => setExported(false), [fields, coverMode, template, background, overlay, accent, align, textScale, textPosition, activeAccount]);
+  useEffect(() => setExported(false), [fields, coverMode, template, background, overlay, accent, align, textScale, textPosition, talkingLayers, activeAccount]);
 
   async function refreshAccounts() {
     try {
@@ -206,7 +228,7 @@ export function XiaohongshuApp() {
     if (randomBackground) setBackground((current) => pickDifferentBackground(backgrounds, current));
   }
   function chooseCoverMode(nextMode) { setCoverMode(nextMode); setTemplate(nextMode === "title" ? "editorial" : "paper-note"); resetPlacement(); }
-  function chooseTemplate(nextTemplate) { setTemplate(nextTemplate); if (nextTemplate === "talking-head") { setAlign("center"); setOverlay(8); } }
+  function chooseTemplate(nextTemplate) { setTemplate(nextTemplate); if (nextTemplate === "talking-head") { setSelectedTalkingLayer("title"); setAlign("center"); setOverlay(8); } }
   function switchAccount(item) { setActiveAccountId(item.id); window.localStorage.setItem("zis-xhs-active-account", item.id); setManagerOpen(false); if (randomBackground) setBackground((current) => pickDifferentBackground(backgrounds, current)); }
   function setRandomEnabled(enabled) { setRandomBackground(enabled); window.localStorage.setItem("zis-xhs-random-background", String(enabled)); if (enabled) setBackground((current) => pickDifferentBackground(backgrounds, current)); }
   function loadBackground(event) { const file = event.target.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => setBackground(String(reader.result)); reader.readAsDataURL(file); }
@@ -224,6 +246,27 @@ export function XiaohongshuApp() {
     setTextPosition({ x: Math.max(-135, Math.min(135, x)), y: Math.max(-210, Math.min(210, y)) });
   }
   function stopDrag(event) { if (dragRef.current?.pointerId === event.pointerId) dragRef.current = null; }
+  function updateTalkingLayer(key, value) {
+    setTalkingLayers((current) => ({ ...current, [selectedTalkingLayer]: { ...current[selectedTalkingLayer], [key]: value } }));
+  }
+  function resetTalkingLayer() {
+    setTalkingLayers((current) => ({ ...current, [selectedTalkingLayer]: { ...defaultTalkingLayers[selectedTalkingLayer] } }));
+  }
+  function resetAllTalkingLayers() { setTalkingLayers(createDefaultTalkingLayers()); }
+  function startTalkingDrag(event, layerId) {
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setSelectedTalkingLayer(layerId);
+    talkingDragRef.current = { pointerId: event.pointerId, layerId, startX: event.clientX, startY: event.clientY, origin: talkingLayers[layerId] };
+  }
+  function moveTalkingDrag(event) {
+    const drag = talkingDragRef.current; if (!drag || drag.pointerId !== event.pointerId || !previewCanvasRef.current) return;
+    const rect = previewCanvasRef.current.getBoundingClientRect();
+    const x = drag.origin.x + (event.clientX - drag.startX) * (540 / rect.width);
+    const y = drag.origin.y + (event.clientY - drag.startY) * (720 / rect.height);
+    setTalkingLayers((current) => ({ ...current, [drag.layerId]: { ...current[drag.layerId], x: Math.max(0, Math.min(540, x)), y: Math.max(0, Math.min(720, y)) } }));
+  }
+  function stopTalkingDrag(event) { if (talkingDragRef.current?.pointerId === event.pointerId) talkingDragRef.current = null; }
 
   async function copyText(value, label) {
     try { await navigator.clipboard.writeText(value); }
@@ -271,11 +314,25 @@ export function XiaohongshuApp() {
           <div className="xhs-background-actions"><label><UploadSimple />上传背景<input type="file" accept="image/*" onChange={loadBackground} /></label><div><input value={backgroundUrl} onChange={(event) => setBackgroundUrl(event.target.value)} placeholder="粘贴图片地址" /><button onClick={applyBackgroundUrl}>使用</button></div></div>
         </section>
         <section><div className="xhs-heading"><b>05</b><div><h2>微调封面</h2><p>只保留高频选项，不需要设计经验</p></div></div>
-          <div className="xhs-style-row"><span>文字对齐</span><div><button className={align === "left" ? "active" : ""} onClick={() => setAlign("left")}><AlignLeft />左对齐</button><button className={align === "center" ? "active" : ""} onClick={() => setAlign("center")}><AlignCenterHorizontal />居中</button></div></div>
-          <div className="xhs-accent-row"><span>强调色</span>{["#ff604e", "#ffe15c", "#8ad9ff", "#b7ef9c", "#e6b7ff"].map((color) => <button key={color} className={accent === color ? "active" : ""} style={{ backgroundColor: color }} onClick={() => setAccent(color)} aria-label={`使用强调色 ${color}`} />)}</div>
-          <label className="xhs-range"><span>背景压暗 <b>{overlay}%</b></span><input type="range" min="0" max="65" value={overlay} onChange={(event) => setOverlay(Number(event.target.value))} /></label>
-          <label className="xhs-range"><span>文字大小 <b>{Math.round(textScale * 100)}%</b></span><input type="range" min="70" max="120" value={Math.round(textScale * 100)} onChange={(event) => setTextScale(Number(event.target.value) / 100)} /></label>
-          <div className="xhs-drag-help"><SlidersHorizontal /><span>在右侧直接拖动文字区调整位置</span><button onClick={resetPlacement}>居中重置</button></div>
+          {template === "talking-head" ? <div className="xhs-layer-editor">
+            <div className="xhs-layer-heading"><span>正在编辑：<b>{activeTalkingLayerName}</b></span><button onClick={resetAllTalkingLayers}>全部重置</button></div>
+            <div className="xhs-layer-tabs">{talkingLayerMeta.map((item) => <button key={item.id} className={selectedTalkingLayer === item.id ? "active" : ""} onClick={() => setSelectedTalkingLayer(item.id)}>{item.name}</button>)}</div>
+            <div className="xhs-font-picker"><span>字体</span><div>{Object.entries(talkingFonts).map(([id, item]) => <button key={id} className={activeTalkingLayer.font === id ? "active" : ""} style={{ fontFamily: item.css }} onClick={() => updateTalkingLayer("font", id)}>{item.name}</button>)}</div></div>
+            <div className="xhs-style-row"><span>组件对齐</span><div><button className={activeTalkingLayer.align === "left" ? "active" : ""} onClick={() => updateTalkingLayer("align", "left")}><AlignLeft />左对齐</button><button className={activeTalkingLayer.align === "center" ? "active" : ""} onClick={() => updateTalkingLayer("align", "center")}><AlignCenterHorizontal />居中</button></div></div>
+            <label className="xhs-range"><span>水平位置 <b>{Math.round(activeTalkingLayer.x)}</b></span><input type="range" min="0" max="540" value={activeTalkingLayer.x} onChange={(event) => updateTalkingLayer("x", Number(event.target.value))} /></label>
+            <label className="xhs-range"><span>垂直位置 <b>{Math.round(activeTalkingLayer.y)}</b></span><input type="range" min="0" max="720" value={activeTalkingLayer.y} onChange={(event) => updateTalkingLayer("y", Number(event.target.value))} /></label>
+            <label className="xhs-range"><span>组件宽度 <b>{Math.round(activeTalkingLayer.width)}px</b></span><input type="range" min="80" max="520" value={activeTalkingLayer.width} onChange={(event) => updateTalkingLayer("width", Number(event.target.value))} /></label>
+            <label className="xhs-range"><span>字号 <b>{Math.round(activeTalkingLayer.fontSize)}px</b></span><input type="range" min="8" max="76" value={activeTalkingLayer.fontSize} onChange={(event) => updateTalkingLayer("fontSize", Number(event.target.value))} /></label>
+            <label className="xhs-range"><span>组件大小 <b>{Math.round(activeTalkingLayer.scale * 100)}%</b></span><input type="range" min="50" max="180" value={Math.round(activeTalkingLayer.scale * 100)} onChange={(event) => updateTalkingLayer("scale", Number(event.target.value) / 100)} /></label>
+            <label className="xhs-range"><span>背景压暗 <b>{overlay}%</b></span><input type="range" min="0" max="65" value={overlay} onChange={(event) => setOverlay(Number(event.target.value))} /></label>
+            <div className="xhs-drag-help"><SlidersHorizontal /><span>点击封面组件后可单独拖动</span><button onClick={resetTalkingLayer}>重置此组件</button></div>
+          </div> : <>
+            <div className="xhs-style-row"><span>文字对齐</span><div><button className={align === "left" ? "active" : ""} onClick={() => setAlign("left")}><AlignLeft />左对齐</button><button className={align === "center" ? "active" : ""} onClick={() => setAlign("center")}><AlignCenterHorizontal />居中</button></div></div>
+            <div className="xhs-accent-row"><span>强调色</span>{["#ff604e", "#ffe15c", "#8ad9ff", "#b7ef9c", "#e6b7ff"].map((color) => <button key={color} className={accent === color ? "active" : ""} style={{ backgroundColor: color }} onClick={() => setAccent(color)} aria-label={`使用强调色 ${color}`} />)}</div>
+            <label className="xhs-range"><span>背景压暗 <b>{overlay}%</b></span><input type="range" min="0" max="65" value={overlay} onChange={(event) => setOverlay(Number(event.target.value))} /></label>
+            <label className="xhs-range"><span>文字大小 <b>{Math.round(textScale * 100)}%</b></span><input type="range" min="70" max="120" value={Math.round(textScale * 100)} onChange={(event) => setTextScale(Number(event.target.value) / 100)} /></label>
+            <div className="xhs-drag-help"><SlidersHorizontal /><span>在右侧直接拖动文字区调整位置</span><button onClick={resetPlacement}>居中重置</button></div>
+          </>}
         </section>
         <section><div className="xhs-heading"><b>06</b><div><h2>生成整篇小红书笔记</h2><p>标题、正文和 3–5 个相关话题一次准备好</p></div></div>
           <label className="xhs-field"><span>笔记标题</span><input value={fields.noteTitle} onChange={(event) => updateField("noteTitle", event.target.value)} placeholder="留空时使用封面标题" /></label>
@@ -284,10 +341,10 @@ export function XiaohongshuApp() {
           <div className="xhs-copy-actions"><button onClick={() => copyText(note.title, "标题")}><CopySimple />复制标题</button><button onClick={() => copyText(note.fullText, "整篇笔记")} className="primary"><Sparkle weight="fill" />复制整篇笔记</button></div><p className="xhs-copy-status">{copyStatus || "复制前请检查事实、数据、个人经历和收益表述。"}</p>
         </section>
       </aside>
-      <section className="xhs-preview-panel"><div className="xhs-preview-bar"><span><i />1080 × 1440 · {coverMode === "title" ? "大标题海报" : "摘要卡片"}</span><small>{activeTemplate.name}</small></div><div className="xhs-stage" ref={stageRef}><div className="xhs-canvas-viewport" style={{ width: `${540 * previewScale}px`, height: `${720 * previewScale}px` }}><div ref={previewCanvasRef} style={{ transform: `scale(${previewScale})` }} className="xhs-canvas-scaled"><CoverCanvas fields={fields} mode={coverMode} template={template} background={background} overlay={overlay} accent={accent} align={align} textScale={textScale} textPosition={textPosition} account={activeAccount} interactive onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={stopDrag} /></div></div></div><div className="xhs-export-bar"><div><Check weight="bold" /><span>预览与下载使用同一版式，可直接发小红书</span></div><div><button className="xhs-copy-export" onClick={() => copyText(note.fullText, "整篇笔记")}><CopySimple />复制笔记</button><button className="xhs-download" onClick={downloadCover} disabled={exporting}>{exported ? <Check weight="bold" /> : <DownloadSimple weight="bold" />}{exporting ? "正在生成…" : exported ? "已下载" : "下载 3:4 封面"}</button></div></div></section>
+      <section className="xhs-preview-panel"><div className="xhs-preview-bar"><span><i />1080 × 1440 · {coverMode === "title" ? "大标题海报" : "摘要卡片"}</span><small>{activeTemplate.name}</small></div><div className="xhs-stage" ref={stageRef}><div className="xhs-canvas-viewport" style={{ width: `${540 * previewScale}px`, height: `${720 * previewScale}px` }}><div ref={previewCanvasRef} style={{ transform: `scale(${previewScale})` }} className="xhs-canvas-scaled"><CoverCanvas fields={fields} mode={coverMode} template={template} background={background} overlay={overlay} accent={accent} align={align} textScale={textScale} textPosition={textPosition} talkingLayers={talkingLayers} selectedTalkingLayer={selectedTalkingLayer} account={activeAccount} interactive onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={stopDrag} onTalkingPointerDown={startTalkingDrag} onTalkingPointerMove={moveTalkingDrag} onTalkingPointerUp={stopTalkingDrag} /></div></div></div><div className="xhs-export-bar"><div><Check weight="bold" /><span>预览与下载使用同一版式，可直接发小红书</span></div><div><button className="xhs-copy-export" onClick={() => copyText(note.fullText, "整篇笔记")}><CopySimple />复制笔记</button><button className="xhs-download" onClick={downloadCover} disabled={exporting}>{exported ? <Check weight="bold" /> : <DownloadSimple weight="bold" />}{exporting ? "正在生成…" : exported ? "已下载" : "下载 3:4 封面"}</button></div></div></section>
     </div>
     <XiaohongshuManagerModal open={managerOpen} accounts={accounts} activeAccount={activeAccount} content={content} onClose={() => setManagerOpen(false)} onSelect={switchAccount} onContentChanged={() => refreshContent(activeAccountId)} />
     <BackgroundManagerModal open={backgroundManagerOpen} backgrounds={backgrounds} onClose={() => setBackgroundManagerOpen(false)} onChanged={(deletedId) => refreshBackgrounds({ deletedId })} />
-    <div className="xhs-export-surface" aria-hidden="true"><div ref={exportRef}><CoverCanvas fields={fields} mode={coverMode} template={template} background={background} overlay={overlay} accent={accent} align={align} textScale={textScale} textPosition={textPosition} account={activeAccount} /></div></div>
+    <div className="xhs-export-surface" aria-hidden="true"><div ref={exportRef}><CoverCanvas fields={fields} mode={coverMode} template={template} background={background} overlay={overlay} accent={accent} align={align} textScale={textScale} textPosition={textPosition} talkingLayers={talkingLayers} selectedTalkingLayer={selectedTalkingLayer} account={activeAccount} /></div></div>
   </main>;
 }
