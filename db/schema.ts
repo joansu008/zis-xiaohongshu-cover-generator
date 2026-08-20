@@ -31,6 +31,25 @@ export const contents = sqliteTable("contents", {
   updatedAt: text("updated_at").notNull(),
 }, (table) => [index("idx_contents_owner_account_id").on(table.ownerAccountId)]);
 
+export const xiaohongshuContents = sqliteTable("xiaohongshu_contents", {
+  id: text("id").primaryKey(),
+  ownerAccountId: text("owner_account_id").references(() => accounts.id, { onDelete: "cascade" }),
+  category: text("category").notNull().default("未分类"),
+  coverTitle: text("cover_title").notNull(),
+  coverSubtitle: text("cover_subtitle").notNull().default(""),
+  excerpt: text("excerpt").notNull().default(""),
+  noteTitle: text("note_title").notNull().default(""),
+  noteBody: text("note_body").notNull(),
+  keywords: text("keywords").notNull().default("[]"),
+  sourceName: text("source_name").notNull().default("自建小红书素材"),
+  sourceUrl: text("source_url").notNull().default(""),
+  requiresVerification: integer("requires_verification", { mode: "boolean" }).notNull().default(false),
+  verificationNote: text("verification_note").notNull().default(""),
+  priority: integer("priority").notNull().default(0),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [index("idx_xiaohongshu_contents_owner_account_id").on(table.ownerAccountId)]);
+
 export const adminLoginAttempts = sqliteTable("admin_login_attempts", {
   clientKey: text("client_key").primaryKey(),
   failures: integer("failures").notNull().default(0),

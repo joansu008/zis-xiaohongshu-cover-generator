@@ -42,6 +42,21 @@ test("falls back to index.html for an unknown app route", async () => {
   assert.deepEqual(calls, ["/flow/step-two?source=share", "/index.html"]);
 });
 
+test("xiaohongshu app route receives route-specific social metadata", async () => {
+  const response = await worker.fetch(new Request("https://example.test/xiaohongshu", { headers: { accept: "text/html" } }), {
+    ASSETS: {
+      fetch: async (request) => new Response(new URL(request.url).pathname === "/index.html"
+        ? '<html><head><meta name="description" content="旧描述" /><title>旧标题</title></head><body></body></html>'
+        : "missing", { status: new URL(request.url).pathname === "/index.html" ? 200 : 404, headers: { "content-type": "text/html" } }),
+    },
+  });
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /<title>zis小红书封面生成器<\/title>/);
+  assert.match(html, /property="og:image" content="https:\/\/example\.test\/og-xiaohongshu\.png"/);
+  assert.match(html, /name="twitter:card" content="summary_large_image"/);
+});
+
 test("does not turn missing API or write requests into the app shell", async () => {
   for (const request of [
     new Request("https://example.test/api/missing", { headers: { accept: "application/json" } }),
@@ -107,6 +122,7 @@ function createApiDb(seed = {}) {
       { id: "public-1", owner_account_id: null, category: "公共", title: "公共内容", draft: "公共正文", insight: "摘要", product_fit: "[]", priority: 1, requires_verification: 0 },
       { id: "private-1", owner_account_id: "annie-default", category: "专属", title: "专属内容", draft: "专属正文", insight: "摘要", product_fit: "[]", priority: 1, requires_verification: 0 },
     ],
+    xhsContents: seed.xhsContents || [],
     backgrounds: seed.backgrounds || [
       { id: "city-1", name: "香港海边", tags: "香港 城市", image_url: "/backgrounds/city-1.jpg", storage_key: null, display_order: 1, created_at: "2026-01-01" },
       { id: "city-2", name: "城市天际线", tags: "城市 日落", image_url: "/backgrounds/city-2.jpg", storage_key: null, display_order: 2, created_at: "2026-01-01" },
@@ -128,7 +144,9 @@ function createApiDb(seed = {}) {
         if (normalized.includes("SELECT id, storage_key FROM backgrounds")) return state.backgrounds.find((item) => item.id === args[0]) || null;
         if (normalized.includes("SELECT avatar_url FROM accounts")) return state.accounts.find((item) => item.id === args[0]) || null;
         if (normalized.includes("COUNT(*) AS count FROM contents WHERE owner_account_id")) return { count: state.contents.filter((item) => item.owner_account_id === args[0]).length };
+        if (normalized.includes("COUNT(*) AS count FROM xiaohongshu_contents WHERE owner_account_id")) return { count: state.xhsContents.filter((item) => item.owner_account_id === args[0]).length };
         if (normalized.includes("SELECT id FROM accounts")) return state.accounts.find((item) => item.id === args[0]) || null;
+        if (normalized.includes("SELECT id FROM xiaohongshu_contents")) return state.xhsContents.find((item) => item.id === args[0]) || null;
         if (normalized.includes("SELECT id FROM contents")) return state.contents.find((item) => item.id === args[0]) || null;
         return null;
       },
@@ -143,6 +161,14 @@ function createApiDb(seed = {}) {
             owner_display_name: state.accounts.find((account) => account.id === item.owner_account_id)?.display_name || null,
           })) };
         }
+        if (normalized.includes("FROM xiaohongshu_contents c")) {
+          const accountId = args[0];
+          return { results: state.xhsContents.filter((item) => item.owner_account_id == null || item.owner_account_id === accountId).map((item) => ({
+            category: "未分类", cover_subtitle: "", excerpt: "", note_title: "", keywords: "[]", source_name: "测试",
+            source_url: "", requires_verification: 0, verification_note: "", priority: 0, ...item,
+            owner_display_name: state.accounts.find((account) => account.id === item.owner_account_id)?.display_name || null,
+          })) };
+        }
         if (normalized.includes("FROM backgrounds")) {
           return { results: [...state.backgrounds].sort((left, right) => left.display_order - right.display_order) };
         }
@@ -154,7 +180,10 @@ function createApiDb(seed = {}) {
         } else if (normalized.startsWith("DELETE FROM admin_login_attempts")) state.attempts.delete(args[0]);
         else if (normalized.startsWith("INSERT INTO accounts")) state.accounts.push({ id: args[0], display_name: args[1], handle: args[2], avatar_url: args[3], created_at: args[4], updated_at: args[5] });
         else if (normalized.startsWith("DELETE FROM contents WHERE owner_account_id")) state.contents = state.contents.filter((item) => item.owner_account_id !== args[0]);
+        else if (normalized.startsWith("DELETE FROM xiaohongshu_contents WHERE owner_account_id")) state.xhsContents = state.xhsContents.filter((item) => item.owner_account_id !== args[0]);
         else if (normalized.startsWith("DELETE FROM accounts")) state.accounts = state.accounts.filter((item) => item.id !== args[0]);
+        else if (normalized.startsWith("INSERT INTO xiaohongshu_contents")) state.xhsContents.push({ id: args[0], owner_account_id: args[1], category: args[2], cover_title: args[3], cover_subtitle: args[4], excerpt: args[5], note_title: args[6], note_body: args[7], keywords: args[8], source_name: args[9], source_url: args[10], requires_verification: args[11], verification_note: args[12], priority: args[13], created_at: args[14], updated_at: args[15] });
+        else if (normalized.startsWith("DELETE FROM xiaohongshu_contents WHERE id")) state.xhsContents = state.xhsContents.filter((item) => item.id !== args[0]);
         else if (normalized.startsWith("INSERT INTO backgrounds")) state.backgrounds.push({ id: args[0], name: args[1], tags: args[2], image_url: args[3], storage_key: args[4], display_order: args[5], created_at: args[6] });
         else if (normalized.startsWith("DELETE FROM backgrounds")) state.backgrounds = state.backgrounds.filter((item) => item.id !== args[0]);
         return { success: true };
@@ -190,6 +219,25 @@ test("public account and content APIs expose shared plus account-owned records",
   assert.deepEqual(contentPayload.content.map((item) => item.scope), ["public", "account"]);
 });
 
+test("xiaohongshu content API exposes only public and selected-account records", async () => {
+  const DB = createApiDb({
+    accounts: [
+      { id: "annie-default", display_name: "安妮", handle: "@kiki89699", avatar_url: "/annie-avatar.jpg", created_at: "2026-01-01", updated_at: "2026-01-01" },
+      { id: "second", display_name: "第二账号", handle: "@second", avatar_url: "/annie-avatar.jpg", created_at: "2026-01-01", updated_at: "2026-01-01" },
+    ],
+    xhsContents: [
+      { id: "xhs-public", owner_account_id: null, cover_title: "公共封面", note_body: "公共正文" },
+      { id: "xhs-annie", owner_account_id: "annie-default", cover_title: "安妮封面", note_body: "安妮正文" },
+      { id: "xhs-second", owner_account_id: "second", cover_title: "第二封面", note_body: "第二正文" },
+    ],
+  });
+  const response = await worker.fetch(new Request("https://example.test/api/xiaohongshu/content?accountId=annie-default"), { DB });
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.deepEqual(payload.content.map((item) => item.coverTitle), ["公共封面", "安妮封面"]);
+  assert.deepEqual(payload.content.map((item) => item.scope), ["public", "account"]);
+});
+
 test("public background API exposes the shared ordered library", async () => {
   const DB = createApiDb();
   const response = await worker.fetch(new Request("https://example.test/api/backgrounds"), { DB });
@@ -204,6 +252,43 @@ test("anonymous visitors cannot call admin write APIs", async () => {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ displayName: "测试", handle: "@test" }),
   }), { DB: createApiDb(), SESSION_SECRET: "session-secret" });
   assert.equal(response.status, 401);
+});
+
+test("anonymous visitors cannot import xiaohongshu materials", async () => {
+  const response = await worker.fetch(new Request("https://example.test/api/admin/xiaohongshu/content/import", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ items: [{ coverTitle: "封面", noteBody: "正文" }] }),
+  }), { DB: createApiDb(), SESSION_SECRET: "session-secret" });
+  assert.equal(response.status, 401);
+});
+
+test("admin can batch import validated xiaohongshu materials and duplicates are rejected", async () => {
+  const DB = createApiDb();
+  const password = "xhs-admin-password";
+  const env = { DB, SESSION_SECRET: "session-secret", ADMIN_PASSWORD_HASH: createHash("sha256").update(password).digest("hex") };
+  const login = await worker.fetch(new Request("https://example.test/api/admin/login", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password }),
+  }), env);
+  const cookie = login.headers.get("set-cookie");
+  const imported = await worker.fetch(new Request("https://example.test/api/admin/xiaohongshu/content/import", {
+    method: "POST", headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ items: [
+      { ownerAccountId: null, category: "成长", coverTitle: "拿回选择权", noteBody: "先行动，再调整。", keywords: ["成长", "行动"] },
+      { ownerAccountId: "annie-default", category: "创作", coverTitle: "把想法写出来", noteBody: "完成比完美重要。", keywords: ["创作"] },
+    ] }),
+  }), env);
+  assert.equal(imported.status, 201);
+  assert.equal((await imported.json()).imported, 2);
+  assert.equal(DB.state.xhsContents.length, 2);
+
+  const duplicate = await worker.fetch(new Request("https://example.test/api/admin/xiaohongshu/content/import", {
+    method: "POST", headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ items: [
+      { coverTitle: "重复封面", noteTitle: "同一笔记", noteBody: "正文一" },
+      { coverTitle: "重复封面", noteTitle: "同一笔记", noteBody: "正文二" },
+    ] }),
+  }), env);
+  assert.equal(duplicate.status, 409);
+  assert.equal(DB.state.xhsContents.length, 2);
 });
 
 test("admin login creates a secure session and authorizes account creation", async () => {

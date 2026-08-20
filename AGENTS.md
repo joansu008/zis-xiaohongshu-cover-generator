@@ -26,3 +26,8 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 - Optimize the controls and copy for matrix-account operators who should not need design or editing experience.
 - Treat a finished post as two deliverables: a downloadable image and a one-line Douyin description with exactly three relevant hashtags that can be copied directly.
 - Let operators switch the exported card identity by uploading an avatar and editing the nickname and account handle; keep a one-click reset to the default 安妮 / @kiki89699 identity.
+
+- Provide “zis小红书封面生成器” as an independent `/xiaohongshu` entry that shares the existing cloud accounts and background library without changing the original card-generator route.
+- Keep the Xiaohongshu content library separate and empty by default. Managers may add, edit, delete, or import up to 500 CSV/XLSX rows; do not seed it from the existing 156公众号卡片 unless the user later supplies or approves new source material.
+- Export Xiaohongshu covers as 1080×1440 PNGs. Support three title-poster templates and three summary-card templates, with draggable/scalable copy, limited alignment/accent/overlay controls, and preview/export parity.
+- Generate an editable Xiaohongshu title, body, and 3–5 deduplicated topics through deterministic templates only; do not add external AI rewriting or direct platform publishing in the first version.

@@ -22,6 +22,13 @@
       "when": 1787167921514,
       "tag": "0002_natural_corsair",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1787170351032,
+      "tag": "0003_black_iron_patriot",
+      "breakpoints": true
     }
   ]
 }

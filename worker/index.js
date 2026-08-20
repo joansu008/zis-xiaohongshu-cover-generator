@@ -8,6 +8,9 @@ export default {
       if (requestUrl.pathname === "/api/content" && request.method === "GET") {
         return listContent(requestUrl, env);
       }
+      if (requestUrl.pathname === "/api/xiaohongshu/content" && request.method === "GET") {
+        return listXiaohongshuContent(requestUrl, env);
+      }
       if (requestUrl.pathname === "/api/backgrounds" && request.method === "GET") {
         return listBackgrounds(env);
       }
@@ -70,9 +73,34 @@ export default {
     const indexUrl = new URL(request.url);
     indexUrl.pathname = "/index.html";
     indexUrl.search = "";
-    return env.ASSETS.fetch(new Request(indexUrl, request));
+    const indexResponse = await env.ASSETS.fetch(new Request(indexUrl, request));
+    if (request.method === "GET" && requestUrl.pathname.replace(/\/+$/, "") === "/xiaohongshu" && indexResponse.ok) {
+      return withXiaohongshuMetadata(indexResponse, requestUrl.origin);
+    }
+    return indexResponse;
   },
 };
+
+async function withXiaohongshuMetadata(response, origin) {
+  const title = "zis小红书封面生成器";
+  const description = "选择模板和背景，生成1080×1440小红书封面与完整笔记文案。";
+  const image = `${origin}/og-xiaohongshu.png`;
+  const metadata = `<meta property="og:title" content="${title}" />
+    <meta property="og:description" content="${description}" />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="${image}" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="${title}" />
+    <meta name="twitter:description" content="${description}" />
+    <meta name="twitter:image" content="${image}" />`;
+  const html = (await response.text())
+    .replace(/<title>[^<]*<\/title>/, `<title>${title}</title>`)
+    .replace(/<meta name="description" content="[^"]*"\s*\/?>/, `<meta name="description" content="${description}" />`)
+    .replace("</head>", `    ${metadata}\n  </head>`);
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  return new Response(html, { status: response.status, statusText: response.statusText, headers });
+}
 
 const SESSION_SECONDS = 30 * 60;
 const LOCK_SECONDS = 15 * 60;
@@ -117,6 +145,20 @@ async function listContent(url, env) {
     ORDER BY c.priority DESC, c.created_at ASC, c.id ASC
   `).bind(accountId).all();
   return apiJson({ content: (result.results || []).map(mapContentRow) });
+}
+
+async function listXiaohongshuContent(url, env) {
+  requireDb(env);
+  const accountId = url.searchParams.get("accountId") || "";
+  if (!accountId) return apiError("请选择账号。", 400);
+  const result = await env.DB.prepare(`
+    SELECT c.*, a.display_name AS owner_display_name
+    FROM xiaohongshu_contents c
+    LEFT JOIN accounts a ON a.id = c.owner_account_id
+    WHERE c.owner_account_id IS NULL OR c.owner_account_id = ?
+    ORDER BY c.priority DESC, c.created_at ASC, c.id ASC
+  `).bind(accountId).all();
+  return apiJson({ content: (result.results || []).map(mapXiaohongshuContentRow) });
 }
 
 async function listBackgrounds(env) {
@@ -172,6 +214,10 @@ async function handleAdminRequest(request, url, env) {
   if (url.pathname === "/api/admin/content" && request.method === "POST") return createContent(request, env);
   if (url.pathname.startsWith("/api/admin/content/") && request.method === "PUT") return updateContent(request, url, env);
   if (url.pathname.startsWith("/api/admin/content/") && request.method === "DELETE") return deleteContent(url, env);
+  if (url.pathname === "/api/admin/xiaohongshu/content" && request.method === "POST") return createXiaohongshuContent(request, env);
+  if (url.pathname === "/api/admin/xiaohongshu/content/import" && request.method === "POST") return importXiaohongshuContent(request, env);
+  if (url.pathname.startsWith("/api/admin/xiaohongshu/content/") && request.method === "PUT") return updateXiaohongshuContent(request, url, env);
+  if (url.pathname.startsWith("/api/admin/xiaohongshu/content/") && request.method === "DELETE") return deleteXiaohongshuContent(url, env);
   if (url.pathname === "/api/admin/avatar" && request.method === "POST") return uploadAvatar(request, env);
   if (url.pathname === "/api/admin/backgrounds" && request.method === "POST") return createBackground(request, env);
   if (url.pathname.startsWith("/api/admin/backgrounds/") && request.method === "DELETE") return deleteBackground(url, env);
@@ -242,12 +288,14 @@ async function deleteAccount(url, env) {
   const account = await env.DB.prepare("SELECT avatar_url FROM accounts WHERE id = ?").bind(id).first();
   if (!account) return apiError("账号不存在。", 404);
   const exclusive = await env.DB.prepare("SELECT COUNT(*) AS count FROM contents WHERE owner_account_id = ?").bind(id).first();
+  const xhsExclusive = await env.DB.prepare("SELECT COUNT(*) AS count FROM xiaohongshu_contents WHERE owner_account_id = ?").bind(id).first();
   await env.DB.batch([
     env.DB.prepare("DELETE FROM contents WHERE owner_account_id = ?").bind(id),
+    env.DB.prepare("DELETE FROM xiaohongshu_contents WHERE owner_account_id = ?").bind(id),
     env.DB.prepare("DELETE FROM accounts WHERE id = ?").bind(id),
   ]);
   await removeManagedAvatar(account.avatar_url, env);
-  return apiJson({ deleted: true, deletedContentCount: Number(exclusive?.count || 0) });
+  return apiJson({ deleted: true, deletedContentCount: Number(exclusive?.count || 0), deletedXiaohongshuContentCount: Number(xhsExclusive?.count || 0) });
 }
 
 async function createContent(request, env) {
@@ -287,6 +335,66 @@ async function deleteContent(url, env) {
   if (!exists) return apiError("内容不存在。", 404);
   await env.DB.prepare("DELETE FROM contents WHERE id = ?").bind(id).run();
   return apiJson({ deleted: true });
+}
+
+async function createXiaohongshuContent(request, env) {
+  const values = await validateXiaohongshuContent(await readJson(request), env);
+  const id = `xhs-${crypto.randomUUID()}`;
+  const now = new Date().toISOString();
+  await insertXiaohongshuStatement(env, id, values, now).run();
+  return apiJson({ content: { id, ...values } }, 201);
+}
+
+async function updateXiaohongshuContent(request, url, env) {
+  const id = pathId(url, "/api/admin/xiaohongshu/content/");
+  const exists = await env.DB.prepare("SELECT id FROM xiaohongshu_contents WHERE id = ?").bind(id).first();
+  if (!exists) return apiError("小红书素材不存在。", 404);
+  const values = await validateXiaohongshuContent(await readJson(request), env);
+  await env.DB.prepare(`
+    UPDATE xiaohongshu_contents SET owner_account_id = ?, category = ?, cover_title = ?, cover_subtitle = ?, excerpt = ?,
+      note_title = ?, note_body = ?, keywords = ?, source_name = ?, source_url = ?, requires_verification = ?,
+      verification_note = ?, priority = ?, updated_at = ? WHERE id = ?
+  `).bind(values.ownerAccountId, values.category, values.coverTitle, values.coverSubtitle, values.excerpt,
+    values.noteTitle, values.noteBody, JSON.stringify(values.keywords), values.sourceName, values.sourceUrl,
+    values.requiresVerification ? 1 : 0, values.verificationNote, values.priority, new Date().toISOString(), id).run();
+  return apiJson({ content: { id, ...values } });
+}
+
+async function deleteXiaohongshuContent(url, env) {
+  const id = pathId(url, "/api/admin/xiaohongshu/content/");
+  const exists = await env.DB.prepare("SELECT id FROM xiaohongshu_contents WHERE id = ?").bind(id).first();
+  if (!exists) return apiError("小红书素材不存在。", 404);
+  await env.DB.prepare("DELETE FROM xiaohongshu_contents WHERE id = ?").bind(id).run();
+  return apiJson({ deleted: true });
+}
+
+async function importXiaohongshuContent(request, env) {
+  const payload = await readJson(request);
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  if (!items.length) return apiError("表格中没有可导入的素材。", 400);
+  if (items.length > 500) return apiError("单次最多导入500条素材。", 413);
+  const values = [];
+  const duplicateKeys = new Set();
+  for (const item of items) {
+    const validated = await validateXiaohongshuContent(item, env);
+    const key = `${validated.ownerAccountId || "public"}\n${validated.coverTitle.toLowerCase()}\n${validated.noteTitle.toLowerCase()}`;
+    if (duplicateKeys.has(key)) return apiError(`导入内容重复：${validated.coverTitle}`, 409);
+    duplicateKeys.add(key);
+    values.push(validated);
+  }
+  const now = new Date().toISOString();
+  await env.DB.batch(values.map((item) => insertXiaohongshuStatement(env, `xhs-${crypto.randomUUID()}`, item, now)));
+  return apiJson({ imported: values.length }, 201);
+}
+
+function insertXiaohongshuStatement(env, id, values, now) {
+  return env.DB.prepare(`
+    INSERT INTO xiaohongshu_contents (id, owner_account_id, category, cover_title, cover_subtitle, excerpt, note_title,
+      note_body, keywords, source_name, source_url, requires_verification, verification_note, priority, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(id, values.ownerAccountId, values.category, values.coverTitle, values.coverSubtitle, values.excerpt,
+    values.noteTitle, values.noteBody, JSON.stringify(values.keywords), values.sourceName, values.sourceUrl,
+    values.requiresVerification ? 1 : 0, values.verificationNote, values.priority, now, now);
 }
 
 async function uploadAvatar(request, env) {
@@ -393,6 +501,36 @@ async function validateContent(payload, env) {
   };
 }
 
+async function validateXiaohongshuContent(payload, env) {
+  const coverTitle = String(payload.coverTitle || "").trim().slice(0, 120);
+  const noteBody = String(payload.noteBody || "").trim().slice(0, 10000);
+  const ownerAccountId = payload.ownerAccountId ? String(payload.ownerAccountId) : null;
+  if (!coverTitle) throw httpError("请填写封面标题。", 400);
+  if (!noteBody) throw httpError("请填写笔记正文。", 400);
+  if (ownerAccountId) {
+    const owner = await env.DB.prepare("SELECT id FROM accounts WHERE id = ?").bind(ownerAccountId).first();
+    if (!owner) throw httpError("指定账号不存在。", 400);
+  }
+  const keywordSource = Array.isArray(payload.keywords) ? payload.keywords : String(payload.keywords || "").split(/[、,，|｜;；\n]/);
+  const keywords = [...new Set(keywordSource.map((item) => String(item).trim().replace(/^#+/, "")).filter(Boolean))].slice(0, 12);
+  const verificationNote = String(payload.verificationNote || "").trim().slice(0, 1000);
+  return {
+    ownerAccountId,
+    category: String(payload.category || "未分类").trim().slice(0, 40) || "未分类",
+    coverTitle,
+    coverSubtitle: String(payload.coverSubtitle || "").trim().slice(0, 180),
+    excerpt: String(payload.excerpt || noteBody.replace(/\s+/g, " ").slice(0, 160)).trim().slice(0, 800),
+    noteTitle: String(payload.noteTitle || coverTitle).trim().slice(0, 120) || coverTitle,
+    noteBody,
+    keywords,
+    sourceName: String(payload.sourceName || "自建小红书素材").trim().slice(0, 120),
+    sourceUrl: String(payload.sourceUrl || "").trim().slice(0, 1000),
+    requiresVerification: Boolean(payload.requiresVerification || verificationNote),
+    verificationNote,
+    priority: Math.max(0, Math.min(10000, Number(payload.priority || 0))),
+  };
+}
+
 function mapContentRow(row) {
   let productFit = [];
   try { productFit = JSON.parse(row.product_fit || "[]"); } catch { productFit = []; }
@@ -416,6 +554,29 @@ function mapContentRow(row) {
     title: row.title,
     draft: row.draft,
     insight: row.insight,
+  };
+}
+
+function mapXiaohongshuContentRow(row) {
+  let keywords = [];
+  try { keywords = JSON.parse(row.keywords || "[]"); } catch { keywords = []; }
+  return {
+    id: row.id,
+    ownerAccountId: row.owner_account_id || null,
+    ownerDisplayName: row.owner_display_name || null,
+    scope: row.owner_account_id ? "account" : "public",
+    category: row.category,
+    coverTitle: row.cover_title,
+    coverSubtitle: row.cover_subtitle,
+    excerpt: row.excerpt,
+    noteTitle: row.note_title,
+    noteBody: row.note_body,
+    keywords,
+    sourceName: row.source_name,
+    sourceUrl: row.source_url,
+    requiresVerification: Boolean(row.requires_verification),
+    verificationNote: row.verification_note,
+    priority: Number(row.priority || 0),
   };
 }
 
